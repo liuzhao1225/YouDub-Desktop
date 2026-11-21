@@ -229,6 +229,13 @@
   transition: none;
 }
 
+/* Studio (/) and other routes without a WindowHeader keep an explicit 48px
+   darwin top strip so dragging stays available even with the sidebar collapsed. */
+.darwinTopBar {
+  flex: none;
+  height: var(--dsh-frame-top-clearance, 48px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .frame[data-animating] .handle {
     transition: none;

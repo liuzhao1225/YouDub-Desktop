@@ -306,7 +306,10 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
               {content}
             </WindowHeaderProvider>
           ) : (
-            content
+            <>
+              {isDarwin && <div className={frameCss.darwinTopBar} data-window-drag aria-hidden="true" />}
+              {content}
+            </>
           )}
         </div>
 

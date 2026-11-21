@@ -35,3 +35,75 @@ body {
 [data-dsh-automatic-focus]:focus:focus-visible {
   outline: none;
 }
+
+/* macOS desktop: the window's sidebar vibrancy shows only through a transparent
+   page background; unlayered rules override Tailwind v4's @layer base defaults. */
+html[data-platform='darwin'],
+html[data-platform='darwin'] body {
+  background: transparent;
+}
+
+html[data-platform='darwin'] body {
+  isolation: isolate;
+}
+
+/* Desktop frames own their own internal scroll containers; suppress redundant
+   root scrollbar gutter reservation in Electron windows. */
+html[data-platform='darwin'],
+html[data-windows-titlebar] {
+  overflow-y: auto;
+  scrollbar-gutter: auto;
+}
+
+/* macOS desktop: every chrome row or dedicated drag bar owns window drag over
+   its own box. Overlays portalled beside #root and interactive controls
+   subtract themselves via geometry in document order. */
+html[data-platform='darwin'] [data-window-drag] {
+  -webkit-app-region: drag;
+}
+
+/* One-frame pulse to force Electron/Blink to re-collect window drag rects
+   (electron#32341) whenever a marked row mounts, unmounts, moves, or resizes. */
+html[data-platform='darwin'] [data-window-drag-recall] {
+  -webkit-app-region: no-drag;
+}
+
+html[data-platform='darwin'] body > :not(#root) {
+  -webkit-app-region: no-drag;
+}
+
+html[data-platform='darwin'] :is(
+  button, a, input, select, textarea, summary, [contenteditable='true'], [tabindex],
+  [role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [role='tooltip'],
+  [role='button'], [role='link'], [role='tab'], [role='menuitem'], [role='menuitemcheckbox'],
+  [role='menuitemradio'], [role='option'], [role='checkbox'], [role='radio'], [role='switch'],
+  [role='slider'], [role='combobox'], [role='textbox']
+) {
+  -webkit-app-region: no-drag;
+}
+
+/* Dedicated top drag strip for standalone desktop screens outside AppShell
+   (such as SetupPage). Web browsers leave it hidden. */
+.youdub-desktop-drag-bar {
+  display: none;
+}
+
+html[data-platform='darwin'] .youdub-desktop-drag-bar {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--dsh-frame-top-clearance, 48px);
+  background: var(--dsw-alias-bg-base, var(--background));
+  -webkit-app-region: drag;
+}
+
+html[data-windows-titlebar] .youdub-desktop-drag-bar {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--dsh-windows-titlebar-height, 40px);
+  background: var(--dsw-alias-bg-base, var(--background));
+  -webkit-app-region: drag;
+}

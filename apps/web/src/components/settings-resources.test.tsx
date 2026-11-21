@@ -139,7 +139,7 @@ it('shows clickable 待更新 badge when newer yt-dlp is detected and distinguis
 
 it('supports preset batch prepare, active variant pause, 2-step delete, yt-dlp success notice, and hides noise disclosures', async () => {
   const richInventory: ResourceInventory = {
-    version: '0.1.0',
+    version: '0.1.1',
     platform: 'darwin',
     arch: 'arm64',
     osVersion: '25',

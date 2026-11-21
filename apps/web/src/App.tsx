@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createApiRequest, EventStreamClient } from '@/lib/api'
+import { installWindowDragRecall } from '@/lib/window-drag-recall'
 import { LanguageProvider, useI18n, useText } from '@/lib/i18n'
 import { Moon, Sun, SunMoon } from '@/lib/icons'
 import { ThemeProvider, useTheme, type ThemePreference } from '@/lib/theme'
@@ -476,6 +477,8 @@ export function App() {
   const [events] = useState(() => new EventStreamClient())
   const syncingSettingsRef = useRef(false)
   const modalOpenRef = useRef(false)
+
+  useEffect(() => installWindowDragRecall({ document }), [])
 
   const handleThemeChange = useCallback((next: ThemePreference) => {
     if (syncingSettingsRef.current || modalOpenRef.current) return

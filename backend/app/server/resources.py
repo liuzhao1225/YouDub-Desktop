@@ -32,7 +32,7 @@ from .settings import LLMProviderConfig, SettingsStore, default_data_dir
 MANIFESTS_DIR = Path(__file__).resolve().parents[1] / "manifests"
 REQUIREMENTS_DIR = Path(__file__).resolve().parents[2] / "requirements"
 REPO_ROOT = Path(__file__).resolve().parents[3]
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 _YTDLP_CHECK_TTL_SECONDS = 6 * 3600
 
 

@@ -332,3 +332,10 @@ it('orders active installation logs by time and switches to a separate model sta
   expect(screen.getByRole('log')).toHaveTextContent('model.safetensors: 50 / 100 MB (50%)')
   expect(screen.getByRole('log')).not.toHaveTextContent('Downloading torch')
 })
+
+it('renders a desktop window-drag top bar and header drag area on SetupScreen', () => {
+  const { container } = render(<SetupScreen {...screenActions} state={{ ...state, phase: 'environment' }} onAction={vi.fn()} />)
+  const dragRegions = container.querySelectorAll('[data-window-drag]')
+  expect(dragRegions.length).toBeGreaterThanOrEqual(2)
+  expect(container.querySelector('.youdub-desktop-drag-bar')).toBeInTheDocument()
+})

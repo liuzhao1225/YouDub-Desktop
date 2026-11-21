@@ -175,3 +175,38 @@ it('auto-collapses to an inline 56px rail on narrow viewports (< 1024px) and exp
   await user.click(screen.getByRole('button', { name: '收起侧边栏' }))
   expect(frame?.style.gridTemplateColumns).toBe('56px minmax(0, 1fr)')
 })
+
+it('keeps a data-window-drag region on Studio (/) on darwin both expanded and collapsed', async () => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: 1440,
+  })
+  window.youdubDesktop = {
+    platform: 'darwin',
+    version: '0.1.1',
+    backendUrl: 'http://127.0.0.1:8765',
+    pickDirectory: vi.fn(async () => null),
+    openPath: vi.fn(async () => {}),
+    checkForUpdates: vi.fn(async () => {}),
+    quitAndInstall: vi.fn(async () => {}),
+    onUpdateState: () => () => {},
+  }
+  const user = userEvent.setup()
+  const { container } = render(
+    <ThemeProvider>
+      <LanguageProvider>
+        <AppShell pathname="/" onNavigate={() => {}} onOpenSettings={() => {}}>
+          <main>Studio content</main>
+        </AppShell>
+      </LanguageProvider>
+    </ThemeProvider>,
+  )
+
+  expect(container.querySelectorAll('[data-window-drag]').length).toBeGreaterThanOrEqual(2)
+  await user.click(screen.getByRole('button', { name: '收起侧边栏' }))
+  expect(container.querySelector('[data-sidebar-collapsed="true"]')).toBeInTheDocument()
+  expect(container.querySelectorAll('[data-window-drag]').length).toBeGreaterThanOrEqual(1)
+  delete window.youdubDesktop
+  delete document.documentElement.dataset.platform
+})
