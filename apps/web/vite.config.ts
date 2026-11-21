@@ -4,8 +4,10 @@ import { defineConfig } from 'vite'
 const backendUrl = process.env.YOUDUB_BACKEND_URL || 'http://127.0.0.1:8765'
 
 export default defineConfig({
-  esbuild: {
-    jsx: 'automatic',
+  oxc: {
+    jsx: {
+      runtime: 'automatic',
+    },
   },
   resolve: {
     alias: {
