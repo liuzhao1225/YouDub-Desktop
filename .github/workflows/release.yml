@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.repository == 'liuzhao1225/YouDub-webui' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    if: (github.repository == 'liuzhao1225/YouDub-Desktop' || github.repository == 'liuzhao1225/YouDub-webui') && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -62,9 +62,9 @@ jobs:
           RELEASE_SHA: ${{ needs.validate.outputs.sha }}
         run: |
           # Candidates are built manually on the exact main commit being released.
-          run_id="$(gh api "repos/$GH_REPO/actions/workflows/harness-development.yml/runs?head_sha=$RELEASE_SHA&event=workflow_dispatch&branch=main" --jq '.workflow_runs[0].id // empty')"
+          run_id="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$RELEASE_SHA&event=workflow_dispatch&branch=main" --jq '.workflow_runs[0].id // empty')"
           if [ -z "$run_id" ]; then
-            echo "::error::此 tag 提交没有 main 候选包验收运行；请在 main 手动运行源码检查并启用 package_desktop。"
+            echo "::error::此 tag 提交没有 main 候选包验收运行；请在 main 手动运行 CI 并启用 package_desktop。"
             exit 1
           fi
           gh run watch "$run_id" --exit-status --interval 15
@@ -96,8 +96,8 @@ jobs:
           node-version: 24
       - name: 安装签名脚本依赖
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
-          npm --prefix apps/harness ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm --prefix apps/desktop install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: youdub-macos-unsigned
@@ -120,9 +120,9 @@ jobs:
         run: |
           env GITHUB_SHA="$RELEASE_SHA" GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$RELEASE_TAG" node scripts/prepare-ci-signing.mjs
           env GITHUB_SHA="$RELEASE_SHA" GITHUB_REF_TYPE=tag GITHUB_REF_NAME="$RELEASE_TAG" node scripts/sign-mac.mjs dist/YouDub.app --sign-only
-      - name: 验证桌面服务与运行后签名
+      - name: 验证应用签名与包结构
         run: |
-          node apps/harness/test/package-smoke.mjs dist/YouDub.app dist/package-smoke-signed
+          test -f dist/YouDub.app/Contents/Resources/build.json
           codesign --verify --deep --strict --verbose=2 dist/YouDub.app
       - name: 通过 TCP 访问 Apple 公证票据服务
         # Hosted runners drop HTTP/3 ticket requests: actions/runner-images#14924.
@@ -157,7 +157,6 @@ jobs:
             dist/latest-mac.yml
             dist/latest-mac.yml.sha256
             dist/dmg-notary.json
-            dist/package-smoke-signed/
           retention-days: 7
           if-no-files-found: error
 

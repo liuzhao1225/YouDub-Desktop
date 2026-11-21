@@ -6,7 +6,20 @@ import { LanguageProvider } from '@/test/language-provider'
 import { useI18n } from '@/lib/i18n'
 import type { NodeTypeDefinition, TaskStep, WorkflowDocument } from './contracts'
 import { createNode, WorkflowCanvas } from './builtin/workflow-canvas'
-import subtitlesTemplate from '../../../../packages/builtin/src/workflow-templates/reviewed-subtitles.json'
+const subtitlesTemplate: WorkflowDocument = {
+  format: 'youdub.workflow',
+  formatVersion: 1,
+  id: 'youdub.subtitles',
+  title: '字幕翻译',
+  inputs: [{ id: 'video', label: '视频', kind: 'artifact', schemaId: 'file/v1', required: true, acceptedMimeTypes: ['video/*'] }],
+  outputs: [
+    { id: 'source-subtitles', label: '原文字幕', kind: 'artifact', schemaId: 'application/x-subrip/v1', required: true, source: { nodeId: 'export', portId: 'source-subtitles' } },
+    { id: 'translated-subtitles', label: '译文字幕', kind: 'artifact', schemaId: 'application/x-subrip/v1', required: true, source: { nodeId: 'export', portId: 'translated-subtitles' } },
+  ],
+  nodes: [],
+  edges: [],
+  presentation: { positions: {}, viewport: { x: 0, y: 0, zoom: 1 } },
+}
 
 const flow = vi.hoisted(() => ({
   screenToFlowPosition: vi.fn(() => ({ x: 1200, y: -300 })),

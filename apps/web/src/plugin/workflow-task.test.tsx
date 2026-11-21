@@ -29,9 +29,9 @@ function mount(data: Fixture, handler?: (path: string, init?: RequestInit) => Pr
   const request = vi.fn(async (path: string, init?: RequestInit) => {
     const result = handler?.(path, init)
     if (result) return result
-    if (path === '/api/v2/node-types') return { items: [data.definition] }
-    if (path === '/api/v2/tasks/task') return structuredClone(data.task)
-    if (path === '/api/v2/tasks/task/nodes/node-primary') return structuredClone(data.detail)
+    if (path === '/api/node-types') return { items: [data.definition] }
+    if (path === '/api/tasks/task') return structuredClone(data.task)
+    if (path === '/api/tasks/task/nodes/node-primary') return structuredClone(data.detail)
     throw new Error(`Unexpected request: ${path}`)
   })
   const context = { apiClient: { request }, navigation: { push: vi.fn(), block: () => () => {} }, slots: { subscribe: () => () => {}, getSnapshot: () => 0, list: (slot: string) => slot === 'workflow.node.details' ? details : [] } } as unknown as TestContext
@@ -230,10 +230,10 @@ it('pairs synthesized audio with translation by segment ID, with downloads and c
   mount(speechFixture())
   const first = await screen.findByRole('listitem', { name: '配音 1' }), second = screen.getByRole('listitem', { name: '配音 2' })
   expect(within(first).getByText('第一句配音。')).toBeInTheDocument()
-  expect(within(first).getByLabelText('配音 1')).toHaveAttribute('src', '/api/youdub/file?path=%2Fapi%2Fv2%2Ftasks%2Ftask%2Fartifacts%2Faudio-one')
+  expect(within(first).getByLabelText('配音 1')).toHaveAttribute('src', '/api/tasks/task/artifacts/audio-one')
   expect(within(first).getByRole('link', { name: '下载音频 1' })).toHaveAttribute('download')
   expect(within(second).getByText('第二句配音。')).toBeInTheDocument()
-  expect(within(second).getByLabelText('配音 2')).toHaveAttribute('src', '/api/youdub/file?path=%2Fapi%2Fv2%2Ftasks%2Ftask%2Fartifacts%2Faudio-two')
+  expect(within(second).getByLabelText('配音 2')).toHaveAttribute('src', '/api/tasks/task/artifacts/audio-two')
   expect(screen.getByRole('button', { name: '原始数据' })).toHaveAttribute('aria-expanded', 'false')
   expect(screen.queryByRole('button', { name: '保存订正' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '确认并继续' })).toBeEnabled()

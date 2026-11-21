@@ -1,7 +1,7 @@
 import type { LocalizedText } from '@/plugin/contracts'
-import { resourceEntries, type ResourceEntry } from '../../../../packages/sdk/src/resource-state'
-export { resourceEntries, mergeResourceEntries } from '../../../../packages/sdk/src/resource-state'
-export type { ResourceEntry, ResourceAction, ResourceStatus, ResourcePhase } from '../../../../packages/sdk/src/resource-state'
+import { resourceEntries, type ResourceEntry, type ResourcePhase } from '@/lib/resource-state'
+export { resourceEntries, mergeResourceEntries } from '@/lib/resource-state'
+export type { ResourceEntry, ResourceAction, ResourceStatus, ResourcePhase } from '@/lib/resource-state'
 
 export interface EnvironmentStep {
   id: string; name: string; status: 'pending' | 'running' | 'ready' | 'failed'; detail?: string; source?: string
@@ -11,18 +11,27 @@ export interface EnvironmentStep {
 export interface SetupModel {
   id: string; name: string; variant: string; purpose: string
   status: 'pending' | 'downloading' | 'paused' | 'ready' | 'failed'
-  received: number; total: number; speed: number; source?: string; error?: string; log?: string
+  received: number; total: number; speed: number; diskBytes?: number; source?: string; error?: string; log?: string
 }
-export type SetupAction = 'pause' | 'resume' | 'retry'
+export type SetupAction = 'pause' | 'resume' | 'retry' | 'delete'
 export interface ResourceSelection { providerId: string; model?: string }
 export interface ResourceRequirement extends ResourceSelection {
   ready: boolean; automatic: boolean; missingPackages: string[]; reason?: string; configurationRequired?: boolean
+}
+export interface ResourceStorageInfo {
+  dataDir: string | null
+  modelsDir: string | null
+  diskBytes: number
+  proxyConfigured: boolean
 }
 export interface ResourcePreparation {
   entries?: ResourceEntry[]
   status: 'missing' | 'preparing' | 'ready' | 'failed'
   selections: ResourceSelection[]; requirements: ResourceRequirement[]
   environment: EnvironmentStep[]; models: SetupModel[]; error?: string
+  storage?: ResourceStorageInfo
+  llmReady?: boolean
+  ytDlp?: YtDlpInfo
   activePreparation?: { selections: ResourceSelection[]; status: ResourcePreparation['status']; error?: string }
 }
 export interface SetupState {
@@ -37,10 +46,35 @@ export interface SetupState {
 export interface ResourceItem extends ResourceSelection {
   label: LocalizedText; automatic: boolean; downloadId?: string
 }
+export interface WhisperVariant {
+  id: string
+  downloadId: string
+  recommended: boolean
+  status: SetupModel['status']
+  installed: boolean
+  received: number
+  total: number
+  speed?: number
+  source?: string | null
+  phase?: ResourcePhase | null
+  diskBytes?: number
+  error?: string | null
+}
+export interface YtDlpInfo {
+  version: string | null
+  installed: boolean
+  latestVersion?: string | null
+  updateAvailable?: boolean
+  checked?: boolean
+}
 export interface ResourceInventory {
   entries?: ResourceEntry[]
   version: string; platform: string; arch: string; osVersion: string; homeDir: string
   environment: EnvironmentStep[]; items: ResourceItem[]; models: SetupModel[]; resources?: ResourcePreparation
+  whisperVariants?: WhisperVariant[]
+  ytDlp?: YtDlpInfo
+  storage?: ResourceStorageInfo
+  llmReady?: boolean
 }
 
 /** The setup screen and authenticated resource page share the same diagnostic projection. */

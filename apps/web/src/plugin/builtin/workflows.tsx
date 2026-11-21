@@ -6,7 +6,7 @@ import { useObservableSource } from '../view-hooks'
 import type { StudioDraftStore } from '@/runtime/studio-draft'
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Copy, Download, GitBranch, Loader2, Pencil, Play, Plus, Redo2, Save, Search, FileInput, FileOutput, Trash2, Undo2, Upload, X } from '@/lib/icons'
-import { Link, text, type Diagnostic, type NodeTypeDefinition, type RouteProps, type WorkflowDocument, type WorkflowDocumentRecord, type WorkflowDescription } from '../sdk'
+import { Link, text, type Diagnostic, type JsonObject, type NodeTypeDefinition, type RouteProps, type WorkflowDocument, type WorkflowDocumentRecord, type WorkflowDescription } from '../sdk'
 import { useI18n, useText } from '@/lib/i18n'
 import type { Text } from '@/locales'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ import { InlineAlert } from '@/components/inline-alert'
 import { Disclosure } from '@/components/ui/disclosure'
 import { WorkflowCanvas } from './workflow-canvas'
 import { GraphPorts, NodeSettings } from './workflow-settings'
-import { INPUTS_ID, OUTPUTS_ID, blankWorkflow, copyWorkflowLabels, parseWorkflow, serializeWorkflowEdits, workflowDrafts, workflowViews, workflowTemplateTitle } from './workflow-utils'
+import { INPUTS_ID, OUTPUTS_ID, blankWorkflow, copyWorkflowLabels, nodeDefinition, parseWorkflow, serializeWorkflowEdits, workflowDrafts, workflowViews, workflowTemplateTitle } from './workflow-utils'
 import { useUnsavedChanges } from './workflow-guard'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { WorkflowOptions, optionPillClassName } from './workflow-options'
@@ -39,7 +39,7 @@ export function WorkflowLibrary({ request, navigate, useWorkflowDocuments }: Bin
     try {
       const document = parseWorkflow(await file.text())
       document.id = crypto.randomUUID()
-      const record = await request<WorkflowDocumentRecord>('/api/v2/workflow-documents', { method: 'POST', body: JSON.stringify({ document }) })
+      const record = await request<WorkflowDocumentRecord>('/api/workflow-documents', { method: 'POST', body: JSON.stringify({ document }) })
       navigate(`/workflows/${record.id}`)
     } catch (error) { setFailure(error instanceof Error ? error.message : String(error)) }
     finally { setBusy(false); if (input.current) input.current.value = '' }
@@ -48,19 +48,18 @@ export function WorkflowLibrary({ request, navigate, useWorkflowDocuments }: Bin
     <PageHeader title={tx("workflows.workflows")} actions={<><Button size="sm" variant="outline" disabled={busy} onClick={() => input.current?.click()}><Upload />{tx("workflows.import")}</Button><Button size="sm" onClick={() => navigate('/workflows/new')}><Plus />{tx("workflows.new.workflow")}</Button><input ref={input} type="file" accept=".json,.workflow.json" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file) }} /></>} />
     {error && <InlineAlert>{error}</InlineAlert>}
     {failure && <InlineAlert>{invalidFile ? <div className="space-y-1.5"><p>{tx('workflows.invalid.import')}</p><Disclosure contained={false} title={tx('workflow.errors.diagnostics')}>{failure}</Disclosure></div> : failure}</InlineAlert>}
-    {data?.legacyDefaultsMigration?.status === 'blocked' && <InlineAlert><p>{tx("workflows.previous.processing.preferences.could.not.be.migrated.the.origina")}</p><ul className="mt-2 list-inside list-disc">{data.legacyDefaultsMigration.diagnostics.map((item, index) => <li key={index}>{item.nodeId ? `${item.nodeId}: ` : ''}{item.message}</li>)}</ul><Button className="mt-3" variant="outline" size="sm" disabled={busy} onClick={() => { setBusy(true); setFailure(''); void request('/api/v2/workflow-documents/migrate-defaults', { method: 'POST' }).then(refresh).catch((failure: Error) => setFailure(failure.message)).finally(() => setBusy(false)) }}>{tx("workflows.retry.migration")}</Button></InlineAlert>}
     {error && <Button variant="outline" onClick={refresh}>{tx("workflows.retry")}</Button>}
     {!data && !error && <Loader2 className="size-5 animate-spin" />}
     {data && !data.items.length && <p className="text-sm text-muted-foreground">{tx("workflows.no.workflows.available")}</p>}
-    {(['builtin', 'user', 'plugin'] as const).map((origin) => {
+    {(['builtin', 'user'] as const).map((origin) => {
       const items = data?.items.filter((item) => item.origin === origin) ?? []
       if (!items.length) return null
-      return <section key={origin} className="space-y-4"><h2 className="font-semibold">{origin === 'builtin' ? tx("workflows.built.in.templates") : origin === 'user' ? tx("workflows.my.workflows") : tx("workflows.plugin.workflows")}</h2><div className="grid gap-3 @min-[30rem]/page:grid-cols-2 @min-[48rem]/page:grid-cols-3">{items.map((item) => <Surface as="article" key={item.id} className="flex min-w-0 flex-col gap-3 p-4">
+      return <section key={origin} className="space-y-4"><h2 className="font-semibold">{origin === 'builtin' ? tx("workflows.built.in.templates") : tx("workflows.my.workflows")}</h2><div className="grid gap-3 @min-[30rem]/page:grid-cols-2 @min-[48rem]/page:grid-cols-3">{items.map((item) => <Surface as="article" key={item.id} className="flex min-w-0 flex-col gap-3 p-4">
         <div className="flex items-start gap-3"><GitBranch className="size-5 shrink-0 text-status-running-fg" /><div className="min-w-0"><Link href={`/workflows/${item.id}`} className="font-semibold break-words hover:text-link">{workflowTitle(item, tx)}</Link><p className="mt-1 text-xs text-muted-foreground">{tx("workflows.value.nodes", { value1: item.document.nodes.length })}</p></div></div>
         <div className="mt-auto flex flex-wrap gap-2"><Button size="sm" onClick={() => navigate(`/workflows/${encodeURIComponent(item.id)}?run=1`)}><Play />{tx("workflows.use")}</Button><Button size="sm" variant="outline" onClick={() => navigate(`/workflows/${encodeURIComponent(item.id)}`)}><Pencil />{tx("workflows.edit")}</Button>{origin === 'user' && <Button size="sm" variant={deleting === item.id ? 'destructive' : 'ghost'} disabled={busy} onClick={() => {
           if (deleting !== item.id) { setDeleting(item.id); return }
           setBusy(true); setFailure('')
-          void request(`/api/v2/workflow-documents/${item.id}?expectedRevision=${item.revision}`, { method: 'DELETE' }).then(refresh).catch((error: Error) => setFailure(error.message)).finally(() => setBusy(false))
+          void request(`/api/workflow-documents/${item.id}?expectedRevision=${item.revision}`, { method: 'DELETE' }).then(refresh).catch((error: Error) => setFailure(error.message)).finally(() => setBusy(false))
         }}><Trash2 />{deleting === item.id ? tx("workflows.confirm.delete") : tx("workflows.delete")}</Button>}{deleting === item.id && <Button size="sm" variant="ghost" onClick={() => setDeleting('')}>{tx("workflows.keep")}</Button>}</div>
       </Surface>)}</div></section>
     })}
@@ -69,7 +68,7 @@ export function WorkflowLibrary({ request, navigate, useWorkflowDocuments }: Bin
 
 export function WorkflowRoute({ params, request, navigate, blockNavigation, useQuery, useSlot, useWorkflowResources }: RouteProps & Bindings<'request' | 'navigate' | 'blockNavigation' | 'useQuery' | 'useSlot' | 'useWorkflowResources'>) {
   const tx = useText()
-  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/v2/node-types')
+  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/node-types')
   useEffect(() => { window.addEventListener('youdub:resources-ready', types.refresh); return () => window.removeEventListener('youdub:resources-ready', types.refresh) }, [types.refresh])
   return <>{types.error && <Page as="div" className={params.nodeId ? undefined : 'max-w-none'}><InlineAlert>{types.error}</InlineAlert>{!types.data && <Button variant="outline" onClick={types.refresh}>{tx("workflows.retry")}</Button>}</Page>}{!types.data ? !types.error && <Page as="div" className={params.nodeId ? undefined : 'max-w-none'}><p role="status">{tx("workflows.loading")}</p></Page> : params.id === 'new' ? <NewEditor query={params.__search} useWorkflowResources={useWorkflowResources} request={request} navigate={navigate} blockNavigation={blockNavigation} useQuery={useQuery} useSlot={useSlot} types={types.data.items} nodeId={params.nodeId} /> : <SavedEditor query={params.__search} useWorkflowResources={useWorkflowResources} request={request} navigate={navigate} blockNavigation={blockNavigation} useQuery={useQuery} useSlot={useSlot} id={params.id} nodeId={params.nodeId} types={types.data.items} />}</>
 }
@@ -83,7 +82,7 @@ function NewEditor({ query, types, nodeId, request, navigate, blockNavigation, u
 }
 function SavedEditor({ query, id, nodeId, types, request, navigate, blockNavigation, useQuery, useSlot, useWorkflowResources }: { query?:string; id: string; nodeId?: string; types: NodeTypeDefinition[] } & Bindings<'request' | 'navigate' | 'blockNavigation' | 'useQuery' | 'useSlot' | 'useWorkflowResources'>) {
   const tx = useText()
-  const { data, error, refresh } = useQuery<WorkflowDocumentRecord>(`/api/v2/workflow-documents/${encodeURIComponent(id)}`)
+  const { data, error, refresh } = useQuery<WorkflowDocumentRecord>(`/api/workflow-documents/${encodeURIComponent(id)}`)
   if (error) return <Page className={nodeId ? undefined : 'max-w-none'}><InlineAlert>{error}</InlineAlert><Button variant="outline" onClick={refresh}>{tx("workflows.retry")}</Button></Page>
   if (!data) return <Page className={nodeId ? undefined : 'max-w-none'}><p role="status">{tx("workflows.loading")}</p></Page>
   return <Editor query={query} useWorkflowResources={useWorkflowResources} request={request} navigate={navigate} blockNavigation={blockNavigation} useQuery={useQuery} useSlot={useSlot} key={id} initial={data} nodeId={nodeId} types={types} />
@@ -160,7 +159,7 @@ function Editor({ query, initial, types, nodeId, request, navigate, blockNavigat
       const create = copy || initial.origin !== 'user' || !revision
       const copied = initial.origin === 'builtin' ? copyWorkflowLabels(current.current, tx) : current.current
       const next = create ? { ...copied, id: crypto.randomUUID(), title: copy || initial.origin !== 'user' ? `${copied.title} · ${tx("workflows.copy")}` : copied.title } : current.current
-      const record = await request<WorkflowDocumentRecord>(create ? '/api/v2/workflow-documents' : `/api/v2/workflow-documents/${initial.id}`, { method: create ? 'POST' : 'PUT', body: JSON.stringify(create ? { document: next } : { document: next, expectedRevision: revision }) })
+      const record = await request<WorkflowDocumentRecord>(create ? '/api/workflow-documents' : `/api/workflow-documents/${initial.id}`, { method: create ? 'POST' : 'PUT', body: JSON.stringify(create ? { document: next } : { document: next, expectedRevision: revision }) })
       workflowDrafts.delete(initial.id)
       setSaved(serializeWorkflowEdits(record.document)); setRevision(record.revision); setDocument(record.document); current.current = record.document
       if (create) { guard.bypass(); navigate(`/workflows/${record.id}${sourceQuery}`) }
@@ -180,7 +179,7 @@ function Editor({ query, initial, types, nodeId, request, navigate, blockNavigat
   }, [])
   async function validate() {
     setBusy(true); setError(''); setValidated(false)
-    try { const result = await request<{ valid: boolean; diagnostics: Diagnostic[] }>('/api/v2/workflow-documents/validate', { method: 'POST', body: JSON.stringify({ document }) }); setDiagnostics(result.diagnostics); setValidated(result.valid) }
+    try { const result = await request<{ valid: boolean; diagnostics: Diagnostic[] }>('/api/workflow-documents/validate', { method: 'POST', body: JSON.stringify({ document }) }); setDiagnostics(result.diagnostics); setValidated(result.valid) }
     catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)) }
     finally { setBusy(false) }
   }
@@ -235,13 +234,49 @@ function Editor({ query, initial, types, nodeId, request, navigate, blockNavigat
   </Layout>
 }
 
-export function GraphStudio({ draftStore, additionalWorkflows, renderWorkflow, request, navigate, useQuery, useSlot, useWorkflowDocuments, useWorkflowResources }: { draftStore: StudioDraftStore; additionalWorkflows: WorkflowDescription[]; renderWorkflow(workflow: WorkflowDescription, selector: ReactNode, onLockChange: (locked: boolean) => void): ReactNode } & Bindings<'request' | 'navigate' | 'useQuery' | 'useSlot' | 'useWorkflowDocuments' | 'useWorkflowResources'>) {
+export function applyQuickNodeOverride(
+  baseDocument: WorkflowDocument,
+  effectiveDocument: WorkflowDocument,
+  types: NodeTypeDefinition[],
+  currentDocOverrides: Record<string, JsonObject> | undefined,
+  nodeId: string,
+  config: JsonObject,
+): Record<string, JsonObject> {
+  const nextDocOverrides: Record<string, JsonObject> = { ...currentDocOverrides, [nodeId]: config }
+  const sourceNode = effectiveDocument.nodes.find((item) => item.id === nodeId)
+  if (!sourceNode) return nextDocOverrides
+  for (const langKey of ['sourceLanguage', 'targetLanguage'] as const) {
+    const nextVal = config[langKey]
+    if (nextVal === undefined || nextVal === sourceNode.config[langKey]) continue
+    for (const peer of baseDocument.nodes) {
+      if (peer.id === nodeId) continue
+      const peerDef = nodeDefinition(peer, types)
+      if (peerDef?.ui?.quickFields?.includes(langKey)) continue
+      const prop = peerDef?.configSchema.properties?.[langKey]
+      if (!prop) continue
+      const options = prop['x-options']
+      if (!options || options.some((opt) => opt.value === nextVal)) {
+        nextDocOverrides[peer.id] = {
+          ...(nextDocOverrides[peer.id] ?? peer.config),
+          [langKey]: nextVal,
+        }
+      }
+    }
+  }
+  return nextDocOverrides
+}
+
+export function GraphStudio({ draftStore, additionalWorkflows = [], renderWorkflow, request, navigate, useQuery, useSlot, useWorkflowDocuments, useWorkflowResources }: {
+  draftStore: StudioDraftStore
+  additionalWorkflows?: WorkflowDescription[]
+  renderWorkflow?(workflow: WorkflowDescription, selector: ReactNode, onLockChange: (locked: boolean) => void): ReactNode
+} & Bindings<'request' | 'navigate' | 'useQuery' | 'useSlot' | 'useWorkflowDocuments' | 'useWorkflowResources'>) {
   const tx = useText(), { language } = useI18n()
   const documents = useWorkflowDocuments()
-  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/v2/node-types')
+  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/node-types')
   useEffect(() => { window.addEventListener('youdub:resources-ready', types.refresh); return () => window.removeEventListener('youdub:resources-ready', types.refresh) }, [types.refresh])
   const store = draftStore
-  const { selected, selectedGraph, draft, overrides } = useObservableSource(store)
+  const { selected, selectedGraph, draft, overrides, nodeOverrides } = useObservableSource(store)
   const setSelected = (value: string) => store.set('selected', value)
   const setSelectedGraph = (value: string) => store.set('selectedGraph', value)
   const [locked, setLocked] = useState(false)
@@ -251,13 +286,179 @@ export function GraphStudio({ draftStore, additionalWorkflows, renderWorkflow, r
   if (!record) return <div className="space-y-3"><p className="text-sm text-muted-foreground">{tx("workflows.no.workflows.available")}</p><Link href="/workflows/new" className="text-sm text-link">{tx("workflows.create.workflow")}</Link></div>
   const external = additionalWorkflows.find((item) => `workflow:${item.id}` === selected)
   const changes = overrides[record.id]
-  const document = changes ? { ...record.document, nodes: record.document.nodes.map((node) => changes[node.id] ? { ...node, config: { ...node.config, ...changes[node.id] } } : node) } : record.document
+  const nodeChanges = nodeOverrides[record.id]
+  const allTypes = types.data.items
+  const translationDefs = allTypes.filter((item) => item.provider.capability === 'translation' || item.type === 'youdub.translate')
+  const availableTranslationDef =
+    translationDefs.find((item) => item.provider.available && (item.provider.models?.length ?? 0) > 0) ??
+    translationDefs.find((item) => item.provider.available)
+
+  let autoBoundChanged = false
+  const documentNodes = record.document.nodes.map((node) => {
+    const cfgPatch = changes?.[node.id]
+    const nPatch = nodeChanges?.[node.id]
+    let nextProvider = nPatch?.provider ?? node.provider
+    if (!nPatch?.provider && (node.type === 'youdub.translate' || nodeDefinition(node, allTypes)?.provider.capability === 'translation')) {
+      const currentDef = translationDefs.find((item) => item.providerId === nextProvider.id)
+      if ((!currentDef || !currentDef.provider.available) && availableTranslationDef && availableTranslationDef.providerId !== nextProvider.id) {
+        const firstModel = availableTranslationDef.provider.models?.[0]
+        const modelId = typeof firstModel === 'string' ? firstModel : firstModel?.id
+        nextProvider = { id: availableTranslationDef.providerId, ...(modelId ? { model: modelId } : {}), device: 'remote' }
+        autoBoundChanged = true
+      }
+    }
+    const nextAutoContinue = nPatch?.autoContinue ?? node.autoContinue
+    if (!cfgPatch && nextProvider === node.provider && nextAutoContinue === node.autoContinue) return node
+    return {
+      ...node,
+      provider: nextProvider,
+      autoContinue: nextAutoContinue,
+      ...(cfgPatch ? { config: { ...node.config, ...cfgPatch } } : {}),
+    }
+  })
+  const hasOverrides = Boolean(changes || (nodeChanges && Object.keys(nodeChanges).length > 0) || autoBoundChanged)
+  const document = hasOverrides ? { ...record.document, nodes: documentNodes } : record.document
+
+  const patchNodeOverride = (nodeId: string, patch: { provider?: { id: string; model?: string; device?: string }; autoContinue?: boolean }) => {
+    store.set('nodeOverrides', (current) => ({
+      ...current,
+      [record.id]: {
+        ...current[record.id],
+        [nodeId]: { ...current[record.id]?.[nodeId], ...patch },
+      },
+    }))
+  }
+
+  // Quick Whisper variant selector
+  const recognizeNode = document.nodes.find((node) => node.type === 'youdub.transcribe' || node.type === 'youdub.recognize')
+  const recognizeDef = recognizeNode ? nodeDefinition(recognizeNode, allTypes) : undefined
+  const whisperModels = recognizeDef?.provider.models ?? []
+  const whisperPill = recognizeNode && whisperModels.length > 1 ? (
+    <Select
+      value={recognizeNode.provider.model ?? ''}
+      onValueChange={(value) => {
+        if (typeof value !== 'string' || locked) return
+        patchNodeOverride(recognizeNode.id, { provider: { ...recognizeNode.provider, model: value } })
+      }}
+    >
+      <SelectTrigger aria-label={tx('studio.quick.asrModel')} disabled={locked} className={optionPillClassName}>
+        <span className="text-subtle-foreground">{tx('studio.quick.asrModel')}</span>
+        <span className="min-w-0 truncate font-medium">{recognizeNode.provider.model || 'large-v3-turbo'}</span>
+      </SelectTrigger>
+      <SelectContent>
+        {whisperModels.map((item) => {
+          const id = typeof item === 'string' ? item : item.id
+          const name = typeof item === 'string' ? item : (item.name || item.id)
+          const ready = typeof item === 'string' ? true : item.available !== false
+          return (
+            <SelectItem key={id} value={id}>
+              {name}{ready ? ` · ${tx('resource.status.ready')}` : ''}
+            </SelectItem>
+          )
+        })}
+      </SelectContent>
+    </Select>
+  ) : null
+
+  // Quick Translation Provider/Model selector
+  const translateNode = document.nodes.find((node) => node.type === 'youdub.translate')
+  const translationModelChoices = translationDefs.flatMap((def) => {
+    const models = def.provider.models ?? []
+    const label = text(def.provider.label, language) || def.providerId
+    if (!models.length) {
+      return [{ key: `${def.providerId}::`, providerId: def.providerId, modelId: undefined as string | undefined, label, available: Boolean(def.provider.available) }]
+    }
+    return models.map((item) => {
+      const modelId = typeof item === 'string' ? item : item.id
+      return {
+        key: `${def.providerId}::${modelId}`,
+        providerId: def.providerId,
+        modelId,
+        label: `${label} · ${modelId}`,
+        available: Boolean(def.provider.available),
+      }
+    })
+  })
+  const selectedTranslateChoice = translateNode
+    ? translationModelChoices.find((c) => c.providerId === translateNode.provider.id && (!c.modelId || c.modelId === (translateNode.provider.model || c.modelId)))
+      ?? translationModelChoices.find((c) => c.providerId === translateNode.provider.id)
+    : undefined
+  const translatePill = translateNode && translationDefs.length > 0 ? (
+    <Select
+      value={selectedTranslateChoice?.key ?? ''}
+      onValueChange={(value) => {
+        if (typeof value !== 'string' || locked) return
+        if (value === '__configure__') {
+          navigate('/settings/models')
+          return
+        }
+        const chosen = translationModelChoices.find((item) => item.key === value)
+        if (!chosen) return
+        patchNodeOverride(translateNode.id, {
+          provider: {
+            id: chosen.providerId,
+            ...(chosen.modelId ? { model: chosen.modelId } : {}),
+            device: 'remote',
+          },
+        })
+      }}
+    >
+      <SelectTrigger aria-label={tx('studio.quick.translationModel')} disabled={locked} className={optionPillClassName}>
+        <span className="text-subtle-foreground">{tx('studio.quick.translationModel')}</span>
+        <span className="min-w-0 truncate font-medium">
+          {selectedTranslateChoice
+            ? selectedTranslateChoice.label
+            : translateNode.provider.model || translateNode.provider.id}
+        </span>
+      </SelectTrigger>
+      <SelectContent>
+        {translationModelChoices.map((choice) => (
+          <SelectItem key={choice.key} value={choice.key}>
+            {choice.label}{!choice.available ? ` · ${tx('settings.llm.unconfigured')}` : ''}
+          </SelectItem>
+        ))}
+        <SelectItem value="__configure__">{tx('studio.quick.configureModels')}</SelectItem>
+      </SelectContent>
+    </Select>
+  ) : null
+
+  // Quick Review-Mode toggle
+  const reviewableNodes = document.nodes.filter((node) => Boolean(nodeDefinition(node, allTypes)?.corrections))
+  const isManualReview = reviewableNodes.some((node) => !node.autoContinue)
+  const reviewModePill = reviewableNodes.length > 0 ? (
+    <Select
+      value={isManualReview ? 'manual' : 'auto'}
+      onValueChange={(value) => {
+        if ((value !== 'manual' && value !== 'auto') || locked) return
+        const autoContinue = value === 'auto'
+        store.set('nodeOverrides', (current) => {
+          const prevDoc = { ...current[record.id] }
+          for (const node of reviewableNodes) {
+            prevDoc[node.id] = { ...prevDoc[node.id], autoContinue }
+          }
+          return { ...current, [record.id]: prevDoc }
+        })
+      }}
+    >
+      <SelectTrigger aria-label={tx('studio.quick.reviewMode')} disabled={locked} className={optionPillClassName}>
+        <span className="text-subtle-foreground">{tx('studio.quick.reviewMode')}</span>
+        <span className="min-w-0 truncate font-medium">
+          {isManualReview ? tx('studio.quick.reviewManual') : tx('studio.quick.reviewAuto')}
+        </span>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="manual">{tx('studio.quick.reviewManual')}</SelectItem>
+        <SelectItem value="auto">{tx('studio.quick.reviewAuto')}</SelectItem>
+      </SelectContent>
+    </Select>
+  ) : null
+
   const selector = <Select value={external ? `workflow:${external.id}` : `graph:${record.id}`} onValueChange={(value) => { if (typeof value === 'string' && !locked) { setSelected(value); if (value.startsWith('graph:')) setSelectedGraph(value.slice(6)) } }}>
     <SelectTrigger aria-label={tx("workflows.workflow")} disabled={locked} className={optionPillClassName}><span className="text-subtle-foreground">{tx("workflows.workflow")}</span><span className="min-w-0 truncate font-medium">{external ? text(external.label, language) : workflowTitle(record, tx)}</span></SelectTrigger>
     <SelectContent>{documents.data.items.map((item) => <SelectItem key={item.id} value={`graph:${item.id}`}>{workflowTitle(item, tx)}</SelectItem>)}{additionalWorkflows.map((item) => <SelectItem key={item.id} value={`workflow:${item.id}`}>{text(item.label, language)}</SelectItem>)}</SelectContent>
   </Select>
   return <section className="space-y-4">
     {(documents.error || types.error) && <InlineAlert>{documents.error || types.error}</InlineAlert>}
-    {external ? renderWorkflow(external, selector, setLocked) : <WorkflowRun prominent submissionStore={store} draft={draft} onDraftChange={value => store.set('draft', value)} useWorkflowResources={useWorkflowResources} request={request} navigate={navigate} useSlot={useSlot} document={document} types={types.data.items} revision={changes ? null : record.revision} onLockChange={setLocked} onStarted={() => { store.clearGraph(record.id); setLocked(false) }} afterInputs={<div className="flex flex-wrap items-center gap-2">{selector}<WorkflowOptions document={document} types={types.data.items} disabled={locked} useSlot={useSlot} onChange={(nodeId, config) => store.set('overrides', (current) => ({ ...current, [record.id]: { ...current[record.id], [nodeId]: config } }))} /></div>} />}
+    {external && renderWorkflow ? renderWorkflow(external, selector, setLocked) : <WorkflowRun prominent submissionStore={store} draft={draft} onDraftChange={value => store.set('draft', value)} useWorkflowResources={useWorkflowResources} request={request} navigate={navigate} useSlot={useSlot} document={document} types={allTypes} revision={hasOverrides ? null : record.revision} onLockChange={setLocked} onStarted={() => { store.clearGraph(record.id); setLocked(false) }} afterInputs={<div className="flex flex-wrap items-center gap-2">{selector}{whisperPill}{translatePill}<WorkflowOptions document={document} types={allTypes} disabled={locked} useSlot={useSlot} onChange={(nodeId, config) => store.set('overrides', (current) => ({ ...current, [record.id]: applyQuickNodeOverride(record.document, document, allTypes, current[record.id], nodeId, config) }))} />{reviewModePill}</div>} />}
   </section>
 }

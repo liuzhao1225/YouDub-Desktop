@@ -45,7 +45,7 @@ def configure_windows_ffmpeg_dll_directory() -> None:
 
 
 def _load_runtime_environment(repo_root: Path, *, data_root: Path | None = None) -> None:
-    if os.getenv("YOUDUB_HARNESS_RUNTIME") == "1":
+    if os.getenv("YOUDUB_MANAGED_RUNTIME") == "1" or os.getenv("YOUDUB_HARNESS_RUNTIME") == "1":
         # Harness resolves profile environment before its official Subprocess service spawns us.
         # First-run base dependencies are prepared before the private FFmpeg download.
         if Path(os.getenv("FFMPEG_PATH", "")).is_file():

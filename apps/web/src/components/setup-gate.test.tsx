@@ -6,7 +6,7 @@ import { SetupScreen, type SetupState } from './setup-screen'
 import { sizeLabel } from '@/lib/format'
 import { SetupDiagnostics } from './setup-diagnostics'
 import { ResourceRow } from './resource-row'
-import modelManifest from '../../../../packages/builtin/src/setup-models.json'
+import modelManifest from '../../../../backend/app/manifests/setup-models.json'
 import requirements from '../../../../backend/requirements/resources.json'
 
 const render = (element: Parameters<typeof testingRender>[0]) => testingRender(element, { wrapper: LanguageProvider })

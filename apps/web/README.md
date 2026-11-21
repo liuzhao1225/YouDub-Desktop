@@ -1,12 +1,20 @@
-# YouDub 业务组件与测试
+# YouDub Web 前端
 
-本目录保留 YouDub 页面、动态 Logo、动画、画布、校对组件和领域测试。桌面由 Harness Renderer、ModuleLoader、Slots、Store 和共享 React 承载；控件与服务接线位于 `apps/harness/src/frontend`。
+基于 **Vite 8 + React 19 + TypeScript + Tailwind CSS v4 + `@xyflow/react`** 的单页应用（SPA），保留全部视觉设计规范、亮暗主题同步与工作流交互体验。
 
-产品构建使用根目录 `npm run build:youdub`，Electron 启动使用 `npm start`。`npm run dev:web` 启动同一 Harness Host 的浏览器开发入口。原独立 Vite 页面、浏览器 Context 引导和插件 import-map 构建已移除。
+- `src/components/shell/`：应用框架、可折叠侧边栏与桌面原生标题栏适配。
+- `src/components/settings/`：通用设置（语言、主题、数据目录、网络代理）与多协议 LLM 供应商配置（OpenAI / Anthropic / Gemini、模型发现、连通性测试）。
+- `src/components/ui/primitives/` & `src/styles/`：独立持有的基础组件、设计 Tokens 与动态 Logo / 动效样式。
+- `src/plugin/builtin/`：工作台、任务库、节点工作流画布与字幕/配音校对界面。
+- `src/lib/` & `src/runtime/`：`/api/*` 请求封装、`EventSource`（`/api/events` SSE）实时订阅、工作流资源检查与本地表单草稿。
+- `src/locales/`：中文（`zh`）、英文（`en`）、日文（`ja`）文案。
 
-- `src/plugin/builtin/`：工作台、任务库、工作流、画布和任务校对组件。
-- `src/components/`：业务组件；通用控件在产品构建中接入 Harness 实现。
-- `src/locales/`：中文、英文、日语业务文案。
-- `src/plugin/sdk.tsx`：保留组件及领域测试使用的合同，产品接入由 Harness 侧负责。
+在仓库根目录或本目录执行：
 
-在本目录执行 `npm test`、`npm run typecheck` 和 `npm run lint`。修改当前产品请阅读[前端开发说明](../harness/docs/FRONTEND-DEVELOPMENT.md)与[本地运行](../harness/docs/DEVELOPMENT.md)。
+```bash
+npm --prefix apps/web run dev
+npm --prefix apps/web run typecheck
+npm --prefix apps/web run lint
+npm --prefix apps/web test
+npm --prefix apps/web run build
+```

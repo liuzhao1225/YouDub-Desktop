@@ -15,10 +15,9 @@ from backend.app.v1 import media, tts, tts_process
 from backend.app.v1.audio import audio_info
 from backend.app.v1.audio_segments import read_speech_clips
 from backend.app.v1.contracts import TaskConfig
-from backend.app.v1.errors import ApiError
+from backend.app.v1.errors import ApiError, OperationCancelledError
 from backend.app.v1.segments import Transcript
 from backend.app.v1.steps import StageContext
-from backend.workers.protocol import WorkerError
 
 
 @pytest.mark.parametrize("format,subtype", [("WAV", "PCM_16"), ("WAVEX", "FLOAT")])
@@ -308,10 +307,10 @@ def test_cancel_terminates_and_reaps_actual_tts_process(context, monkeypatch):
         if children:
             checks += 1
             if checks == 2:
-                raise WorkerError("CANCELLED", "The host cancelled this invocation.")
+                raise OperationCancelledError("CANCELLED", "The host cancelled this invocation.")
 
     monkeypatch.setattr(media.subprocess, "Popen", popen)
-    with pytest.raises(WorkerError, match="The host cancelled this invocation") as error:
+    with pytest.raises(OperationCancelledError, match="The host cancelled this invocation") as error:
         tts.run(replace(context, check_cancel=cancel), lambda *args: None, prepared_references=prepare_references(replace(context, check_cancel=cancel)))
     assert error.value.code == "CANCELLED"
     assert len(children) == 1 and children[0].poll() is not None

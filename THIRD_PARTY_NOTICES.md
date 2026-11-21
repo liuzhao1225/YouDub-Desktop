@@ -4,19 +4,9 @@ YouDub includes the following source adaptations in addition to its separately
 licensed dependencies. These notices do not replace the YouDub project license
 or the licenses distributed with dependencies.
 
-## DeepSeek Harness — desktop, host and shared UI
+## DeepSeek Design Tokens & UI Primitives — styling adaptation
 
-The maintained source subset is under `vendor/deepseek-harness/source/`.
-Its origin is recorded in [upstream.json](vendor/deepseek-harness/upstream.json):
-DeepSeek Harness `dsh-v0.2.1-rc.2`, commit
-`687f282e8625c6b8d11ff58211a90524be2e4317`.
-
-YouDub reuses its desktop shell, shared UI, plugin lifecycle, model settings,
-credentials and LLM services. The earlier standalone model-provider copy has
-been removed. The retained source [license](vendor/deepseek-harness/source/LICENSE)
-and [third-party notices](vendor/deepseek-harness/source/THIRD_PARTY_NOTICES.md)
-are included in desktop distributions. Runtime dependencies retain their own
-licenses in their installed packages.
+Portions of the CSS design tokens (`apps/web/src/styles/`) and base UI primitive components (`apps/web/src/components/ui/primitives/`) were originally adapted from DeepSeek Design styles under the MIT License (`dsh-v0.2.1-rc.2`). Runtime dependencies retain their own licenses in their installed packages.
 
 ### Original MIT notice
 

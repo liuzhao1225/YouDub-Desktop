@@ -1,5 +1,4 @@
-import { WorkflowsPage, WorkflowPage } from '../../../harness/src/frontend/workflow-pages'
-import { useFeatures } from '../../../harness/src/frontend/runtime'
+import { useFeatures } from '@/runtime/features'
 import { TestFeatureProvider, type TestContext } from './test-bindings'
 import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
@@ -8,12 +7,48 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
 import { type NodeTypeDefinition, type WorkflowDocument, type WorkflowDocumentRecord } from './sdk'
-import { GraphStudio as GraphStudioView } from './builtin/workflows'
+import { GraphStudio as GraphStudioView, WorkflowLibrary, WorkflowRoute } from './builtin/workflows'
 import { bindTestComponent } from './test-bindings'
 const GraphStudio = bindTestComponent(GraphStudioView, ['draftStore', 'request', 'navigate', 'useQuery', 'useSlot', 'useWorkflowDocuments', 'useWorkflowResources'])
+const WorkflowsPage = bindTestComponent(WorkflowLibrary, ['request', 'navigate', 'useWorkflowDocuments'])
+const WorkflowPage = bindTestComponent(WorkflowRoute, ['request', 'navigate', 'blockNavigation', 'useQuery', 'useSlot', 'useWorkflowResources'])
 import { serializeWorkflowEdits, workflowDrafts, workflowViews } from './builtin/workflow-utils'
-import { nodeDescriptors } from '../../../../packages/builtin/src/node-contracts'
-import dubbingTemplate from '../../../../packages/builtin/src/workflow-templates/source-clone-dubbing.json'
+
+const downloadDescriptor: Omit<NodeTypeDefinition, 'providerId' | 'provider' | 'operation' | 'outputs'> = {
+  type: 'youdub.download',
+  version: '1',
+  label: '下载视频',
+  category: 'media',
+  inputs: [],
+  configSchema: {
+    type: 'object',
+    properties: {
+      proxyPort: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 65535,
+        default: 0,
+        'x-title': '本机 HTTP 代理端口（0 为直连）',
+      },
+    },
+  },
+  defaults: { proxyPort: 0 },
+}
+
+const dubbingTemplate: WorkflowDocument = {
+  format: 'youdub.workflow',
+  formatVersion: 1,
+  id: 'youdub.dubbing',
+  title: '视频配音',
+  inputs: [{ id: 'video', label: '视频', kind: 'artifact', schemaId: 'file/v1', required: true, acceptedMimeTypes: ['video/*'] }],
+  outputs: [
+    { id: 'video', label: '配音视频', kind: 'artifact', schemaId: 'video/mp4/v1', required: true, source: { nodeId: 'export', portId: 'video' } },
+    { id: 'audio', label: '配音音频', kind: 'artifact', schemaId: 'audio/wav/v1', required: true, source: { nodeId: 'export', portId: 'audio' } },
+  ],
+  nodes: [],
+  edges: [],
+  presentation: { positions: {}, viewport: { x: 0, y: 0, zoom: 1 } },
+}
 
 vi.mock('./builtin/workflow-canvas', () => ({
   WorkflowCanvas: ({ document, fitOnLoad, onReady, onOpen, onSelect, onChange, addNodeRef }: {
@@ -41,8 +76,8 @@ const record: WorkflowDocumentRecord = { id: 'example', revision: 1, document, o
 function mount(path = '/workflows/example', options: { record?: WorkflowDocumentRecord; empty?: boolean; studio?: boolean; types?: NodeTypeDefinition[] } = {}) {
   const current = structuredClone(options.record ?? record)
   const request = vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === '/api/v2/node-types') return { items: options.types ?? [type] }
-    if (url.startsWith('/api/v2/workflow-documents?')) return { items: options.empty ? [] : [current], hasMore: false }
+    if (url === '/api/node-types') return { items: options.types ?? [type] }
+    if (url.startsWith('/api/workflow-documents?')) return { items: options.empty ? [] : [current], hasMore: false }
     if (url.endsWith('/validate')) return { valid: true, diagnostics: [] }
     if (init?.method === 'PUT' || init?.method === 'POST') return { ...current, revision: 2, document: JSON.parse(init.body as string).document }
     return current
@@ -65,7 +100,7 @@ function mount(path = '/workflows/example', options: { record?: WorkflowDocument
     const segments = location.split('?')[0].split('/').filter(Boolean)
     const route = segments.length > 3 ? 'workflow-node' : segments.length > 1 ? 'workflow-editor' : 'workflows'
     const Page = route === 'workflows' ? WorkflowsPage : WorkflowPage
-    return <TestFeatureProvider context={context}><LanguageProvider>{options.studio ? <GraphStudio additionalWorkflows={[]} renderWorkflow={() => null} /> : <Page key={location} params={{ id: segments[1], nodeId: segments[3] }} />}</LanguageProvider></TestFeatureProvider>
+    return <TestFeatureProvider context={context}><LanguageProvider>{options.studio ? <GraphStudio /> : <Page key={location} params={{ id: segments[1], nodeId: segments[3] }} />}</LanguageProvider></TestFeatureProvider>
   }
   render(<Host />)
   return { request, push, navigate }
@@ -101,7 +136,7 @@ it('shows built-in names in Japanese and saves a copy with the displayed names a
   expect(outputs[1]).toHaveValue('吹き替え音声')
   await user.clear(outputs[1]); await user.type(outputs[1], 'My narration')
   await user.click(screen.getByRole('button', { name: 'コピーを保存' }))
-  const saved = request.mock.calls.find(([url, init]) => url === '/api/v2/workflow-documents' && init?.method === 'POST')
+  const saved = request.mock.calls.find(([url, init]) => url === '/api/workflow-documents' && init?.method === 'POST')
   const copy = JSON.parse(String(saved?.[1]?.body)).document as WorkflowDocument
   expect(copy.id).not.toBe(template.id)
   expect(copy.title).toBe('動画の吹き替え · コピー')
@@ -159,7 +194,7 @@ it('starts a new workflow as a draft with the node library open', async () => {
 })
 
 it('adds the existing download node and saves its proxy port through the generic settings editor', async () => {
-  const download: NodeTypeDefinition = { ...nodeDescriptors.download, providerId: 'youdub.download', operation: 'download', provider: { id: 'youdub.download', label: 'YouTube / B 站', operations: [] }, outputs: [{ name: 'video', kind: 'artifact', schemaId: 'video/mp4/v1', required: true }] }
+  const download: NodeTypeDefinition = { ...downloadDescriptor, providerId: 'youdub.download', operation: 'download', provider: { id: 'youdub.download', label: 'YouTube / B 站', operations: [] }, outputs: [{ name: 'video', kind: 'artifact', schemaId: 'video/mp4/v1', required: true }] }
   const { request } = mount('/workflows/new', { types: [download] })
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: /下载视频/ }))
@@ -168,7 +203,7 @@ it('adds the existing download node and saves its proxy port through the generic
   expect(proxy).toHaveAttribute('step', '1')
   fireEvent.change(proxy, { target: { value: '7897' } })
   await user.click(screen.getByRole('button', { name: '保存' }))
-  const saved = request.mock.calls.find(([url, init]) => url === '/api/v2/workflow-documents' && init?.method === 'POST')
+  const saved = request.mock.calls.find(([url, init]) => url === '/api/workflow-documents' && init?.method === 'POST')
   expect(JSON.parse(String(saved?.[1]?.body)).document.nodes[0].config.proxyPort).toBe(7897)
 })
 

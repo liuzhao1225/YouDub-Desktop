@@ -30,7 +30,7 @@ export type TaskStatus = 'queued' | 'running' | 'waiting' | 'paused' | 'cancelli
 export type TaskAction = 'cancel' | 'retry' | 'rerun' | 'delete'
 export type TaskStep = {
   id: string; label: LocalizedText; status: string; progress: number | null
-  providerId?: string; message?: string | null; error?: { message: string } | null
+  providerId?: string; message?: string | null; error?: { code?: string; message: string } | null
 }
 export type TaskOutput = {
   id: string; name?: string; label: string; mimeType: string; url: string; size?: number

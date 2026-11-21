@@ -2,7 +2,7 @@
   "groups": {
     "acceleration": { "accelerated": true, "modules": { "torch": "torch", "torchaudio": "torchaudio" } },
     "punkt": { "modules": { "nltk": "nltk" } },
-    "base": { "modules": { "dotenv": "python-dotenv", "pydantic": "pydantic", "packaging": "packaging" } },
+    "base": { "modules": { "dotenv": "python-dotenv", "pydantic": "pydantic", "packaging": "packaging", "sentencex": "sentencex" } },
     "media": { "modules": { "soundfile": "soundfile", "numpy": "numpy" } },
     "download": { "modules": { "yt_dlp": "yt-dlp" } },
     "whisper": { "accelerated": true, "modules": { "torch": "torch", "torchaudio": "torchaudio", "whisper": "openai-whisper" } },
@@ -14,7 +14,7 @@
   "providers": {
     "youdub.media": { "dependencyGroups": ["media"] },
     "youdub.download": { "dependencyGroups": ["download", "media"] },
-    "whisper": { "dependencyGroups": ["media", "whisper"], "model": { "id": "tiny", "downloadId": "whisper" } },
+    "whisper": { "dependencyGroups": ["media", "whisper"], "model": { "id": "large-v3-turbo", "downloadId": "whisper" } },
     "voxcpm": { "dependencyGroups": ["media", "voxcpm"], "model": { "id": "VoxCPM2", "downloadId": "voxcpm" } },
     "demucs": { "dependencyGroups": ["media", "demucs"], "model": { "id": "htdemucs", "downloadId": "demucs" } },
     "qwen_forced_aligner": { "dependencyGroups": ["media", "qwen_forced_aligner"], "model": { "id": "Qwen3-ForcedAligner-0.6B-hf", "downloadId": "qwen" } }

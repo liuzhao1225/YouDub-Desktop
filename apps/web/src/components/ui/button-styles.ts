@@ -1,7 +1,7 @@
 import { cva } from 'class-variance-authority'
-import styles from '../../../../../vendor/deepseek-harness/source/packages/client/ui-primitives/src/Button.module.css'
+import styles from './primitives/Button.module.css'
 
-/** Shared Harness appearance, including links that use the button face. */
+/** Shared button styles including links styled as buttons. */
 export const buttonVariants = cva([styles.button, '[&_svg]:size-4 [&_svg]:shrink-0'], {
   variants: {
     variant: {

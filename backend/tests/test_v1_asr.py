@@ -13,10 +13,9 @@ import pytest
 
 from backend.app.v1 import asr, asr_process, media
 from backend.app.v1.contracts import TaskConfig
-from backend.app.v1.errors import ApiError
+from backend.app.v1.errors import ApiError, OperationCancelledError
 from backend.app.v1.steps import StageContext
 from backend.app.v1.segments import Transcript
-from backend.workers.protocol import WorkerError
 
 
 @pytest.fixture
@@ -398,7 +397,7 @@ def test_run_requires_child_output(context, monkeypatch):
 
 
 def test_cancellation_reaps_asr_child_before_returning(context, cancelled_media_process):
-    with pytest.raises(WorkerError, match="The host cancelled this invocation") as error:
+    with pytest.raises(OperationCancelledError, match="The host cancelled this invocation") as error:
         asr.run(replace(context, check_cancel=cancelled_media_process), lambda *args: None)
     assert error.value.code == "CANCELLED"
     assert not (context.work_dir / "transcript.json").exists()

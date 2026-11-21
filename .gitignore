@@ -181,14 +181,15 @@ data/
 workfolder/
 env.txt
 
-# Next.js
+# Build & package manager artifacts
 node_modules/
-apps/web/.next/
-apps/web/.next-desktop/
-apps/web/out/
+apps/web/dist/
+apps/desktop/dist/
 apps/web/node_modules/
+apps/desktop/node_modules/
 apps/web/.env*
 !apps/web/.env.example
+.cache/
 
 # Python
 backend/.pytest_cache/
@@ -198,5 +199,5 @@ backup/
 # Generated from the shared website demo assets at build time.
 apps/web/public/examples/
 
-# Local review captures and historical migration evidence
+# Local review captures and historical design build output
 output/

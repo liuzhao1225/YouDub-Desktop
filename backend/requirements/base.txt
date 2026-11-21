@@ -1,3 +1,8 @@
 python-dotenv
 pydantic
 packaging
+fastapi
+uvicorn
+httpx
+python-multipart
+sentencex

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ThemeProvider, useTheme } from '../../../harness/src/frontend/theme-context'
+import { ThemeProvider, useTheme } from '@/lib/theme'
 
 function Controls() {
   const { theme, setTheme } = useTheme()

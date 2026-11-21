@@ -1,7 +1,6 @@
 import type { ResourceSelection, SetupAction, SetupState } from '@/runtime/setup-contracts'
 import { createStore, type StoreApi } from '@/lib/store'
 import type { Request } from '@/plugin/runtime/types'
-import type { Catalog } from '@/plugin/contracts'
 
 class SnapshotStore<T extends object> {
   private readonly store: StoreApi<T>
@@ -65,71 +64,6 @@ export class SetupController extends SnapshotStore<SetupSnapshot> {
         clearTimeout(this.timer)
         this.update({ error: failure instanceof Error ? failure.message : String(failure) })
       }
-    } finally {
-      if (this.current(controller)) this.update({ busy: false })
-    }
-  }
-}
-
-interface TranslationSnapshot { loaded: boolean; configured: boolean; ready: boolean; busy: boolean; error: string }
-
-function translationAvailability(catalog: Catalog) {
-  const providers = catalog.providers.filter(provider => !provider.legacy && provider.capability === 'translation')
-  const configured = providers.some(provider => provider.available)
-  const error = configured ? '' : providers.filter(provider => provider.unavailableReason)
-    .map(provider => `${provider.label}: ${provider.unavailableReason}`).join('\n')
-  return { configured, error }
-}
-
-/** First run shares the same provider editor and availability rules as Settings. */
-export class TranslationSetupController extends SnapshotStore<TranslationSnapshot> {
-  private controller: AbortController | null = null
-  constructor(private readonly suppliedRequest: Request) { super({ loaded: false, configured: false, ready: false, busy: false, error: '' }) }
-  start = () => {
-    this.stop()
-    this.controller = new AbortController()
-    this.update({ loaded: false, configured: false, ready: false, error: '', busy: false })
-    void this.load(this.controller)
-  }
-  stop = () => { this.controller?.abort(); this.controller = null }
-  refreshConfigured = async () => {
-    const controller = this.controller
-    if (!controller) return
-    try {
-      const catalog = await this.api<Catalog>(controller, '/api/v2/catalog')
-      if (this.current(controller)) this.update(translationAvailability(catalog))
-    } catch (failure) {
-      if (this.current(controller)) this.update({ configured: false, error: failure instanceof Error ? failure.message : String(failure) })
-    }
-  }
-  continue = () => { if (this.controller && this.snapshot.configured) this.update({ ready: true }) }
-  private current(controller: AbortController) { return this.controller === controller && !controller.signal.aborted }
-  private async api<T>(controller: AbortController, path: string, init?: RequestInit): Promise<T> {
-    return this.suppliedRequest<T>(path, { ...init, signal: controller.signal })
-  }
-
-  private async load(controller: AbortController) {
-    try {
-      const [settings, catalog] = await Promise.all([
-        this.api<{ plugins?: Record<string, { translationDeferred?: boolean }> }>(controller, '/api/v2/settings'),
-        this.api<Catalog>(controller, '/api/v2/catalog'),
-      ])
-      if (!this.current(controller)) return
-      const availability = translationAvailability(catalog)
-      this.update({ loaded: true, ...availability, ready: availability.configured || settings.plugins?.['youdub.onboarding']?.translationDeferred === true })
-    } catch (failure) {
-      if (this.current(controller)) this.update({ error: failure instanceof Error ? failure.message : String(failure) })
-    }
-  }
-  skip = async () => {
-    const controller = this.controller
-    if (this.snapshot.busy || !this.snapshot.loaded || !controller) return
-    this.update({ busy: true, error: '' })
-    try {
-      await this.api(controller, '/api/v2/settings', { method: 'PATCH', body: JSON.stringify({ plugin: { id: 'youdub.onboarding', config: { translationDeferred: true } } }) })
-      if (this.current(controller)) this.update({ ready: true })
-    } catch (failure) {
-      if (this.current(controller)) this.update({ error: failure instanceof Error ? failure.message : String(failure) })
     } finally {
       if (this.current(controller)) this.update({ busy: false })
     }

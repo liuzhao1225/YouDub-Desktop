@@ -4,11 +4,12 @@ import type { InputFile } from '@/plugin/builtin/workflow-launch'
 import type { Request } from '@/plugin/runtime/types'
 import type { TaskView } from '@/plugin/contracts'
 
+export type NodeOverride = { provider?: { id: string; model?: string; device?: string }; autoContinue?: boolean }
 export type WorkflowRunDraft = { selectedFiles: InputFile[]; sourceUrl: string; proxyPort?: number; runtimeByDocument: Record<string, Record<string, JsonObject>> }
 export type ComposerDraft = { files: Record<string, File>; sourceUrl: string; config: JsonObject }
 export type Submission = { id: string; path: string; body: FormData | string; busy: boolean; error: string; failure?: unknown; task?: TaskView }
-type StudioDraft = { selected: string; selectedGraph: string; draft: WorkflowRunDraft; overrides: Record<string, Record<string, JsonObject>>; composers: Record<string, ComposerDraft>; submissions: Record<string, Submission> }
-const empty = (): StudioDraft => ({ selected: '', selectedGraph: '', draft: { selectedFiles: [], sourceUrl: '', runtimeByDocument: {} }, overrides: {}, composers: {}, submissions: {} })
+type StudioDraft = { selected: string; selectedGraph: string; draft: WorkflowRunDraft; overrides: Record<string, Record<string, JsonObject>>; nodeOverrides: Record<string, Record<string, NodeOverride>>; composers: Record<string, ComposerDraft>; submissions: Record<string, Submission> }
+const empty = (): StudioDraft => ({ selected: '', selectedGraph: '', draft: { selectedFiles: [], sourceUrl: '', runtimeByDocument: {} }, overrides: {}, nodeOverrides: {}, composers: {}, submissions: {} })
 
 /** Owned by the studio plugin so visiting settings retains File objects and task options. */
 export class StudioDraftStore {
@@ -22,10 +23,11 @@ export class StudioDraftStore {
   clearGraph(id: string) {
     this.set('draft', current => { const runtimeByDocument = { ...current.runtimeByDocument }; delete runtimeByDocument[id]; return { selectedFiles: [], sourceUrl: '', runtimeByDocument } })
     this.set('overrides', current => { const next = { ...current }; delete next[id]; return next })
+    this.set('nodeOverrides', current => { const next = { ...current }; delete next[id]; return next })
     this.clearSubmission(`graph:${id}`)
   }
   /** The accepted request and its ID outlive route components; retries reuse the exact body. */
-  async submit(key: string, request: Request, body?: FormData | string, path = '/api/v2/tasks'): Promise<TaskView | undefined> {
+  async submit(key: string, request: Request, body?: FormData | string, path = '/api/tasks'): Promise<TaskView | undefined> {
     let submission = this.getSnapshot().submissions[key]
     if (submission?.busy) return
     if (!submission) {
@@ -42,12 +44,12 @@ export class StudioDraftStore {
   async check(key: string, request: Request) {
     const submission = this.getSnapshot().submissions[key]
     if (!submission || submission.busy) return
-    return submission.task ?? this.resolve(key, () => request<TaskView>(`/api/v2/tasks/${submission.id}`))
+    return submission.task ?? this.resolve(key, () => request<TaskView>(`/api/tasks/${submission.id}`))
   }
   async discard(key: string, request: Request) {
     const submission = this.getSnapshot().submissions[key]
     if (!submission || submission.busy) return false
-    const result = await this.resolve(key, async () => { await request(`/api/v2/imports/${submission.id}`, { method: 'DELETE' }); return true })
+    const result = await this.resolve(key, async () => { await request(`/api/imports/${submission.id}`, { method: 'DELETE' }); return true })
     if (result) this.clearSubmission(key)
     return !!result
   }

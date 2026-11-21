@@ -7,6 +7,7 @@ import type { QueryResult, WorkflowDocuments } from './runtime/query'
 import type { WorkflowResourcesResult } from './runtime/workflow-resources'
 import type { StudioDraftStore } from '@/runtime/studio-draft'
 import type { WorkflowDocument } from './contracts'
+import type { EventStreamClient } from '@/lib/api'
 export type { Observable, Request } from './runtime/types'
 export type UseQuery = <T>(path: string, pollMs?: number, shouldPoll?: (value: T) => boolean) => QueryResult<T>
 export interface ClientBindings {
@@ -19,6 +20,7 @@ export interface ClientBindings {
   useWorkflowResources(document: WorkflowDocument): WorkflowResourcesResult
   draftStore: StudioDraftStore
   submissionStore: StudioDraftStore
+  events?: EventStreamClient
 }
 export type Bindings<K extends keyof ClientBindings> = Pick<ClientBindings, K>
 export type RouteProps = { params: Record<string, string> }
@@ -33,6 +35,6 @@ export type SlotMap = {
   'workflow.node.editors': { id: string; component: ComponentType<NodeEditorProps> }
   'workflow.node.details': { id: string; component: ComponentType<NodeDetailProps> }
 }
-export { Link } from '../../../harness/src/frontend/sdk'
+export { Link } from '@/runtime/features'
 
 export {text,matchRoute} from './domain-helpers'

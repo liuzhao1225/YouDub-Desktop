@@ -20,7 +20,7 @@ export function UploadSlot({ slot, file, disabled, alternative, onChange }: { sl
   async function loadSample() {
     setLoadingSample(true); setSampleError('')
     try {
-      const response = await fetch('/api/youdub/examples/assets/jensen-en.mp4')
+      const response = await fetch('/examples/assets/jensen-en.mp4')
       if (!response.ok) throw new Error(`jensen-en.mp4: HTTP ${response.status}`)
       onChange(new File([await response.blob()], 'jensen-en.mp4', { type: 'video/mp4' }))
     } catch (error) { setSampleError(error instanceof Error ? error.message : String(error)) }

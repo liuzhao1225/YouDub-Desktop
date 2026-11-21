@@ -92,11 +92,11 @@ it('does not abort its own preparation on mutation invalidation and continues pr
   stop()
 })
 it('invalidates resource changes while leaving language settings and task mutations alone', () => {
-  expect(changesResources('/api/v2/settings', 'PATCH', JSON.stringify({ ui_language: 'zh' }))).toBe(false)
-  expect(changesResources('/api/v2/settings', 'PATCH', JSON.stringify({ connection: { model: 'new' } }))).toBe(true)
-  expect(changesResources('/api/v2/resources/check', 'POST', '{}')).toBe(false)
-  expect(changesResources('/api/v2/resources/prepare', 'POST', '{}')).toBe(true)
-  expect(changesResources('/api/v2/tasks', 'POST', new FormData())).toBe(false)
+  expect(changesResources('/api/settings', 'PATCH', JSON.stringify({ ui_language: 'zh' }))).toBe(false)
+  expect(changesResources('/api/settings', 'PATCH', JSON.stringify({ connection: { model: 'new' } }))).toBe(true)
+  expect(changesResources('/api/resources/check', 'POST', '{}')).toBe(false)
+  expect(changesResources('/api/resources/prepare', 'POST', '{}')).toBe(true)
+  expect(changesResources('/api/tasks', 'POST', new FormData())).toBe(false)
 })
 
 it('checks selections on mount without preparing, prepares only the selected resource and stops reads on disposal', async () => {
@@ -110,7 +110,7 @@ it('checks selections on mount without preparing, prepares only the selected res
   const controller = new ResourcesController(request as never)
   const unsubscribe = controller.subscribe(() => {})
   await vi.advanceTimersByTimeAsync(0)
-  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/v2/resources', '/api/v2/resources/check'])
+  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/resources', '/api/resources/check'])
   const selections = [{ providerId: 'whisper', model: 'tiny' }]
   controller.prepare(selections)
   await vi.advanceTimersByTimeAsync(0)

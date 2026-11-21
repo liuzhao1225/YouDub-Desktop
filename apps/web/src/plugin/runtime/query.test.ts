@@ -56,6 +56,6 @@ it('loads all workflow pages and reports a later-page failure without publishing
   const resource = new QueryClient(request as Request).workflowDocuments()
   const failed = new Promise<void>((resolve) => resource.subscribe(() => { if (resource.getSnapshot().error) resolve() }))
   await failed
-  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/v2/workflow-documents?limit=100&offset=0', '/api/v2/workflow-documents?limit=100&offset=1'])
+  expect(request.mock.calls.map(([path]) => path)).toEqual(['/api/workflow-documents?limit=100&offset=0', '/api/workflow-documents?limit=100&offset=1'])
   expect(resource.getSnapshot()).toEqual({ data: null, error: 'Second page failed' })
 })

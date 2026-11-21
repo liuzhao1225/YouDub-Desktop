@@ -14,9 +14,8 @@ import soundfile as sf
 from backend.app.config import ffmpeg_binary
 from backend.app.v1 import export, media
 from backend.app.v1.contracts import TaskConfig
-from backend.app.v1.errors import ApiError
+from backend.app.v1.errors import ApiError, OperationCancelledError
 from backend.app.v1.steps import StageContext
-from backend.workers.protocol import WorkerError
 
 
 @pytest.fixture
@@ -112,7 +111,7 @@ def test_render_failure_is_not_reported_as_completion(monkeypatch, context, retu
 
 
 def test_cancelling_export_reaps_child_before_returning(context, cancelled_media_process):
-    with pytest.raises(WorkerError, match="The host cancelled this invocation") as error:
+    with pytest.raises(OperationCancelledError, match="The host cancelled this invocation") as error:
         export.run(replace(context, check_cancel=cancelled_media_process), lambda value, message: None, output_dir=context.work_dir / "output")
     assert error.value.code == "CANCELLED"
 
