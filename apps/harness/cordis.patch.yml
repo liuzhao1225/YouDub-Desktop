@@ -33,6 +33,17 @@
       name: '@deepseek-ai/dsh-credentials-local'
     - id: llm-pi-ai
       name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          openllm:
+            displayName: OpenLLM
+            apiKeyEnv: OPENLLM_API_KEY
+            api: openai-completions
+            baseURL: https://www.openllm.sh/v1
+            models:
+              - id: plus
+                contextWindow: 262144
+                maxTokens: 65535
     - id: subprocess
       name: '@deepseek-ai/dsh-subprocess-local'
     - id: plugin-inventory

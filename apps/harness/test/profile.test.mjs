@@ -149,6 +149,13 @@ test('positive product composition contains framework services without retired p
   assert.deepEqual(parsed.layers.map(layer => layer.packageName), required);
   assert.equal(rows.get('web-runtime').name, '@deepseek-ai/dsh-web-app');
   assert.equal(rows.get('ui-theme').config.preference, 'light');
+  assert.deepEqual(rows.get('llm-pi-ai').config.providers.openllm, {
+    displayName: 'OpenLLM',
+    apiKeyEnv: 'OPENLLM_API_KEY',
+    api: 'openai-completions',
+    baseURL: 'https://www.openllm.sh/v1',
+    models: [{ id: 'plus', contextWindow: 262144, maxTokens: 65535 }],
+  });
 });
 
 test('legacy product prefix migrates once while extensions, settings and dependency metadata survive', async t => {
