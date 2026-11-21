@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { LANGUAGE_OPTIONS, languagePacks, sharedMessages, translateMessage, type Text, type UiLanguage } from '@/locales'
+import { getDesktopBridge } from './desktop-bridge'
 
 export { LANGUAGE_OPTIONS }
 export type { Text, UiLanguage }
@@ -47,6 +48,10 @@ export function LanguageProvider({ children, source, onChangeLanguage }: {
   )
 
   const language = source ? externalSnapshot.active : localLanguage
+
+  useEffect(() => {
+    getDesktopBridge()?.setLanguage?.(language)
+  }, [language])
 
   const setLanguage = useCallback((next: UiLanguage) => {
     if (source) {

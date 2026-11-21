@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
+import { createMockDesktopBridge } from '@/test/desktop-bridge'
 import { EventStreamClient } from '@/lib/api'
 import { createFeatures, FeatureProvider } from '@/runtime/features'
 import { TaskLog } from './task-log'
@@ -14,17 +15,7 @@ afterEach(() => {
 })
 
 it('loads tail logs, expands full logs, copies full logs, and tokenizes download links', async () => {
-  window.youdubDesktop = {
-    platform: 'darwin',
-    version: '2.0.0',
-    backendUrl: 'http://127.0.0.1:8765',
-    authToken: 'secret-token',
-    pickDirectory: vi.fn(),
-    openPath: vi.fn(async () => {}),
-    checkForUpdates: vi.fn(),
-    quitAndInstall: vi.fn(),
-    onUpdateState: vi.fn(() => () => {}),
-  }
+  window.youdubDesktop = createMockDesktopBridge({ authToken: 'secret-token' })
 
   const tailLines = Array.from({ length: 200 }, (_, i) => `line-${i + 1}`).join('\n')
   const fullContent = `earlier-line\n${tailLines}`

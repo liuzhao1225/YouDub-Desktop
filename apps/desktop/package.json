@@ -1,6 +1,6 @@
 {
   "name": "@youdub/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "YouDub video localization desktop",
   "author": "YouDub contributors",
@@ -8,6 +8,7 @@
   "main": "dist/main.js",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node -e \"require('node:fs').rmSync('../../.cache/desktop-test',{recursive:true,force:true})\" && esbuild src/*.test.ts --bundle --platform=node --format=cjs --target=node22 --outdir=../../.cache/desktop-test --out-extension:.js=.cjs && node --test ../../.cache/desktop-test/*.test.cjs",
     "build": "esbuild src/main.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/main.js --external:electron --external:electron-updater && esbuild src/preload.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/preload.cjs --external:electron",
     "start": "electron ."
   },

@@ -16,6 +16,7 @@ import { useTheme, type ThemePreference } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import type { Request as ApiRequest } from '@/plugin/runtime/types'
 import type { SettingsFocusSection } from '@/lib/settings-navigation'
+import { DesktopUpdateSection } from './DesktopUpdateSection'
 
 export type SettingsTab = 'general' | 'llm'
 type ProtocolKind = 'openai' | 'anthropic' | 'gemini'
@@ -833,7 +834,7 @@ function SettingsModalContent({
                 <div
                   ref={youtubeCookiesSectionRef}
                   className={cn(
-                    'space-y-2 border-t border-border/60 pt-4 transition-all',
+                    'space-y-2 border-t border-border/60 py-4 transition-all',
                     highlightedSection === 'youtube-cookies' &&
                       'rounded-lg bg-primary/5 p-3 -mx-3 ring-2 ring-primary/35',
                   )}
@@ -912,6 +913,8 @@ function SettingsModalContent({
                     {tx('settings.general.youtubeCookiesHint')}
                   </p>
                 </div>
+
+                <DesktopUpdateSection />
               </Surface>
             </div>
           ) : (

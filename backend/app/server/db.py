@@ -12,6 +12,9 @@ from typing import Any, Iterator
 from ..paths import now_iso
 from .errors import AppError
 
+ACTIVE_TASK_STATUSES = ("queued", "running", "waiting", "cancelling")
+_ACTIVE_TASK_PLACEHOLDERS = ", ".join("?" for _ in ACTIVE_TASK_STATUSES)
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS workflow_documents (
     id TEXT PRIMARY KEY,
@@ -86,6 +89,16 @@ class Database:
     @property
     def ready(self) -> bool:
         return self._conn is not None
+
+    def count_active_tasks(self) -> int:
+        with self._lock:
+            if self._conn is None:
+                return 0
+            row = self._conn.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE status IN ({_ACTIVE_TASK_PLACEHOLDERS})",
+                ACTIVE_TASK_STATUSES,
+            ).fetchone()
+            return int(row[0])
 
     def open(self, db_path: Path) -> None:
         resolved = db_path.expanduser().resolve()
@@ -434,7 +447,7 @@ class Database:
             row = conn.execute("SELECT attempt, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if row is None:
                 raise AppError(404, "TASK_NOT_FOUND", f"Task {task_id!r} does not exist.")
-            if row["status"] in {"queued", "running", "waiting", "cancelling"}:
+            if row["status"] in ACTIVE_TASK_STATUSES:
                 raise AppError(409, "TASK_ACTIVE", "Cancel an active task before deleting it.")
             if expected_attempt is not None and row["attempt"] != expected_attempt:
                 raise AppError(409, "CONFLICT", "Task attempt does not match.")
@@ -548,7 +561,8 @@ class Database:
         interrupted_ids: list[str] = []
         with self.transaction() as conn:
             rows = conn.execute(
-                "SELECT id, revision, steps_json FROM tasks WHERE status IN ('queued', 'running', 'waiting', 'cancelling')"
+                f"SELECT id, revision, steps_json FROM tasks WHERE status IN ({_ACTIVE_TASK_PLACEHOLDERS})",
+                ACTIVE_TASK_STATUSES,
             ).fetchall()
             for row in rows:
                 steps = json.loads(row["steps_json"])

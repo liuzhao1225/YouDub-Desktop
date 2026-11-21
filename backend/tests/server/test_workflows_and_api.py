@@ -362,3 +362,34 @@ def test_stage_worker_export_port_mapping_keep_bg_false_and_japanese_alignment(m
         assert valid_res["valid"] is True
         check_res = client.post("/api/resources/check", json={"document": both_doc}).json()
         assert all(m["id"] != "qwen" for m in check_res["models"])
+
+
+def test_system_active_work_counts_all_active_tasks_and_prep(tmp_path):
+    app, client = _make_client(tmp_path, auth_token="tok")
+    with client:
+        assert client.get("/api/system/active-work").status_code == 401
+        headers = {"Authorization": "Bearer tok"}
+        assert client.get("/api/system/active-work", headers=headers).json() == {
+            "activeTasks": 0,
+            "preparingResources": False,
+        }
+
+        client.post("/api/setup", headers=headers, json={"action": "configure", "path": str(tmp_path / "data")})
+        for idx in range(25):
+            app.state.db.create_task(
+                {
+                    "id": f"task-{idx}",
+                    "status": "succeeded" if idx < 21 else ("queued", "running", "waiting", "cancelling")[idx - 21],
+                    "sourceName": "clip.mp4",
+                    "workflowId": "wf",
+                    "workflowVersion": "1.0",
+                    "graphSnapshot": {"nodes": [], "edges": []},
+                }
+            )
+        assert client.get("/api/system/active-work", headers=headers).json() == {
+            "activeTasks": 4,
+            "preparingResources": False,
+        }
+
+        app.state.resources._state.status = "preparing"
+        assert client.get("/api/system/active-work", headers=headers).json()["preparingResources"] is True

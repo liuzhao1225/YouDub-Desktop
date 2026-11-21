@@ -1,10 +1,11 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
+import { createMockDesktopBridge } from '@/test/desktop-bridge'
 import { ThemeProvider } from '@/lib/theme'
+import type { DesktopUpdateState } from '@/lib/desktop-bridge'
 import { AppShell } from './AppShell'
-import type { DesktopUpdateState } from './Sidebar'
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -89,29 +90,28 @@ it('renders the 4 core routes without Extensions, persists collapse, cycles them
   expect(window.localStorage.getItem('youdub-sidebar-collapsed')).toBe('false')
 })
 
-it('applies darwin platform attribute and exposes desktop update actions when downloaded', async () => {
+it('applies darwin platform attribute, hydrates update state, shows download percent, opens settings, and quits to install', async () => {
   let listener: ((state: DesktopUpdateState) => void) | undefined
-  const checkForUpdates = vi.fn(async () => {})
+  const checkForUpdates = vi.fn(async (): Promise<DesktopUpdateState> => ({ status: 'idle' }))
   const quitAndInstall = vi.fn(async () => {})
+  const getUpdateState = vi.fn(async (): Promise<DesktopUpdateState> => ({ status: 'downloading', version: '2.1.0', percent: 42 }))
+  const onOpenSettings = vi.fn()
+  const user = userEvent.setup()
 
-  window.youdubDesktop = {
-    platform: 'darwin',
-    version: '2.0.0',
-    backendUrl: 'http://127.0.0.1:8765',
-    pickDirectory: vi.fn(async () => null),
-    openPath: vi.fn(async () => {}),
+  window.youdubDesktop = createMockDesktopBridge({
+    getUpdateState,
     checkForUpdates,
     quitAndInstall,
     onUpdateState: (cb) => {
       listener = cb
       return () => {}
     },
-  }
+  })
 
   const { container } = render(
     <ThemeProvider>
       <LanguageProvider>
-        <AppShell pathname="/" onNavigate={() => {}} onOpenSettings={() => {}}>
+        <AppShell pathname="/" onNavigate={() => {}} onOpenSettings={onOpenSettings}>
           <main>Studio content</main>
         </AppShell>
       </LanguageProvider>
@@ -121,20 +121,27 @@ it('applies darwin platform attribute and exposes desktop update actions when do
   expect(document.documentElement.dataset.platform).toBe('darwin')
   expect(container.querySelector('[data-platform="darwin"]')).toBeInTheDocument()
 
-  act(() => {
-    listener?.({ status: 'available', version: '2.1.0' })
-  })
-  const availablePill = screen.getByRole('button', { name: '发现新版本 v2.1.0' })
-  await userEvent.setup().click(availablePill)
-  expect(checkForUpdates).toHaveBeenCalledTimes(1)
+  await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(1))
+  const downloadingPill = await screen.findByRole('button', { name: '正在下载 v2.1.0 (42%)' })
+  await user.click(downloadingPill)
+  expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  expect(checkForUpdates).not.toHaveBeenCalled()
   expect(quitAndInstall).not.toHaveBeenCalled()
 
   act(() => {
     listener?.({ status: 'downloaded', version: '2.1.0' })
   })
   const installPill = screen.getByRole('button', { name: '重启安装 v2.1.0' })
-  await userEvent.setup().click(installPill)
+  await user.click(installPill)
   expect(quitAndInstall).toHaveBeenCalledTimes(1)
+
+  // Collapsed darwin leading control surfaces a ready-to-install dot badge
+  await user.click(screen.getByRole('button', { name: '收起侧边栏' }))
+  expect(screen.getByTestId('collapsed-update-badge')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '展开侧边栏' })).toHaveAttribute(
+    'title',
+    '展开侧边栏 · 重启安装 v2.1.0',
+  )
 })
 
 it('auto-collapses to an inline 56px rail on narrow viewports (< 1024px) and expands inline without a drawer', async () => {
@@ -182,16 +189,7 @@ it('keeps a data-window-drag region on Studio (/) on darwin both expanded and co
     writable: true,
     value: 1440,
   })
-  window.youdubDesktop = {
-    platform: 'darwin',
-    version: '0.1.1',
-    backendUrl: 'http://127.0.0.1:8765',
-    pickDirectory: vi.fn(async () => null),
-    openPath: vi.fn(async () => {}),
-    checkForUpdates: vi.fn(async () => {}),
-    quitAndInstall: vi.fn(async () => {}),
-    onUpdateState: () => () => {},
-  }
+  window.youdubDesktop = createMockDesktopBridge({ version: '0.1.2' })
   const user = userEvent.setup()
   const { container } = render(
     <ThemeProvider>

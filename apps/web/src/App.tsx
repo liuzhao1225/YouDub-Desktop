@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createApiRequest, EventStreamClient } from '@/lib/api'
+import { getDesktopBridge } from '@/lib/desktop-bridge'
 import { installWindowDragRecall } from '@/lib/window-drag-recall'
 import { LanguageProvider, useI18n, useText } from '@/lib/i18n'
 import { Moon, Sun, SunMoon } from '@/lib/icons'
@@ -161,11 +162,15 @@ function Workbench({
   events,
   syncingSettingsRef,
   modalOpenRef,
+  openSettingsHandlerRef,
+  pendingOpenSettingsRef,
 }: {
   request: ApiRequest
   events: EventStreamClient
   syncingSettingsRef: MutableRefObject<boolean>
   modalOpenRef: MutableRefObject<boolean>
+  openSettingsHandlerRef: MutableRefObject<(() => void) | null>
+  pendingOpenSettingsRef: MutableRefObject<boolean>
 }) {
   const tx = useText()
   const { language, setLanguage } = useI18n()
@@ -297,6 +302,20 @@ function Workbench({
     window.addEventListener('popstate', controller.handlePopState)
     return () => window.removeEventListener('popstate', controller.handlePopState)
   }, [controller])
+
+  useEffect(() => {
+    const open = () => controller.openSettings('general')
+    openSettingsHandlerRef.current = open
+    if (pendingOpenSettingsRef.current) {
+      pendingOpenSettingsRef.current = false
+      open()
+    }
+    return () => {
+      if (openSettingsHandlerRef.current === open) {
+        openSettingsHandlerRef.current = null
+      }
+    }
+  }, [controller, openSettingsHandlerRef, pendingOpenSettingsRef])
 
   useEffect(() => {
     events.start()
@@ -477,8 +496,20 @@ export function App() {
   const [events] = useState(() => new EventStreamClient())
   const syncingSettingsRef = useRef(false)
   const modalOpenRef = useRef(false)
+  const openSettingsHandlerRef = useRef<(() => void) | null>(null)
+  const pendingOpenSettingsRef = useRef(false)
 
   useEffect(() => installWindowDragRecall({ document }), [])
+
+  useEffect(() => {
+    return getDesktopBridge()?.onOpenSettings?.(() => {
+      if (openSettingsHandlerRef.current) {
+        openSettingsHandlerRef.current()
+      } else {
+        pendingOpenSettingsRef.current = true
+      }
+    })
+  }, [])
 
   const handleThemeChange = useCallback((next: ThemePreference) => {
     if (syncingSettingsRef.current || modalOpenRef.current) return
@@ -496,7 +527,7 @@ export function App() {
     }).catch(() => undefined)
   }, [request])
 
-  const pickDirectory = typeof window !== 'undefined' ? window.youdubDesktop?.pickDirectory : undefined
+  const pickDirectory = getDesktopBridge()?.pickDirectory
 
   return (
     <ThemeProvider onChangeTheme={handleThemeChange}>
@@ -514,6 +545,8 @@ export function App() {
             events={events}
             syncingSettingsRef={syncingSettingsRef}
             modalOpenRef={modalOpenRef}
+            openSettingsHandlerRef={openSettingsHandlerRef}
+            pendingOpenSettingsRef={pendingOpenSettingsRef}
           />
         </SetupGate>
       </LanguageProvider>

@@ -4,12 +4,14 @@ import {
   IconPanelLeftOutlineRegular,
 } from '@/components/ui/primitives/icons/index.tsx'
 import { WindowHeaderProvider } from '@/components/page-layout'
+import { getDesktopBridge } from '@/lib/desktop-bridge'
 import { useText } from '@/lib/i18n'
+import { formatDesktopUpdateText, useDesktopUpdates } from '@/lib/use-desktop-updates'
 import { cn } from '@/lib/utils'
 import frameCss from './AppFrame.module.css'
 import leadingCss from './HeaderLeadingControls.module.css'
 import conversationCss from './ConversationRoot.module.css'
-import { Sidebar, type DesktopUpdateState } from './Sidebar'
+import { Sidebar } from './Sidebar'
 
 const SIDEBAR_STORAGE_KEY = 'youdub-sidebar-collapsed'
 const SIDEBAR_WIDTH_STORAGE_KEY = 'youdub-sidebar-width'
@@ -51,7 +53,8 @@ export interface AppShellProps {
 
 export function AppShell({ pathname, onNavigate, onOpenSettings, children }: AppShellProps) {
   const tx = useText()
-  const isDarwin = typeof window !== 'undefined' && window.youdubDesktop?.platform === 'darwin'
+  const desktop = getDesktopBridge()
+  const isDarwin = desktop?.platform === 'darwin'
   const [viewportWidth, setViewportWidth] = useState<number>(() => {
     if (typeof window === 'undefined' || window.innerWidth <= 0) return 1280
     return window.innerWidth
@@ -62,7 +65,7 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
   const [animating, setAnimating] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [railIn, setRailIn] = useState(false)
-  const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null)
+  const { state: updateState, quitAndInstall } = useDesktopUpdates()
   const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null)
   const frameRef = useRef<HTMLDivElement | null>(null)
   const prevViewportRef = useRef<number | null>(null)
@@ -83,11 +86,6 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
       else document.documentElement.dataset.platform = previous
     }
   }, [isDarwin])
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.youdubDesktop?.onUpdateState) return
-    return window.youdubDesktop.onUpdateState((next) => setUpdateState(next))
-  }, [])
 
   useEffect(() => () => clearTimeout(animationTimer.current), [])
 
@@ -217,7 +215,7 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
     } catch { /* ignore storage errors */ }
   }, [])
 
-  const isDesktop = typeof window !== 'undefined' && Boolean(window.youdubDesktop)
+  const isDesktop = Boolean(desktop)
   const hasWindowHeader =
     isDesktop &&
     pathname !== '/' &&
@@ -265,6 +263,7 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
               isDarwin={isDarwin}
               railIn={railIn}
               updateState={updateState}
+              onQuitAndInstall={() => void quitAndInstall()}
               onToggleCollapse={toggleCollapse}
               onOpenSettings={onOpenSettings}
               onNavigate={handleNavigate}
@@ -277,12 +276,23 @@ export function AppShell({ pathname, onNavigate, onOpenSettings, children }: App
             <div className={leadingCss.controls}>
               <button
                 type="button"
-                className={leadingCss.iconButton}
+                className={cn(leadingCss.iconButton, 'relative')}
                 aria-label={tx('nav.expandSidebar')}
-                title={tx('nav.expandSidebar')}
+                title={
+                  updateState?.status === 'downloaded'
+                    ? `${tx('nav.expandSidebar')} · ${formatDesktopUpdateText(updateState, tx)}`
+                    : tx('nav.expandSidebar')
+                }
                 onClick={toggleCollapse}
               >
                 <IconPanelLeftOutlineRegular size={16} />
+                {updateState?.status === 'downloaded' && (
+                  <span
+                    aria-hidden="true"
+                    data-testid="collapsed-update-badge"
+                    className="absolute right-0.5 top-0.5 size-2 rounded-full bg-status-success-fg ring-2 ring-background"
+                  />
+                )}
               </button>
               <button
                 type="button"

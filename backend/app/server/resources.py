@@ -32,7 +32,7 @@ from .settings import LLMProviderConfig, SettingsStore, default_data_dir
 MANIFESTS_DIR = Path(__file__).resolve().parents[1] / "manifests"
 REQUIREMENTS_DIR = Path(__file__).resolve().parents[2] / "requirements"
 REPO_ROOT = Path(__file__).resolve().parents[3]
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 _YTDLP_CHECK_TTL_SECONDS = 6 * 3600
 
 
@@ -142,6 +142,10 @@ class ResourceManager:
 
     def _data_root(self) -> Path | None:
         return self.settings.data_path()
+
+    def is_preparing(self) -> bool:
+        prep_active = self._prep_task is not None and not self._prep_task.done()
+        return prep_active or self._state.status == "preparing"
 
     # ------------------------------------------------------------------
     # Binary & venv resolution

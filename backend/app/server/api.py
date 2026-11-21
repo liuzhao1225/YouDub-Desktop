@@ -166,6 +166,13 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {"ok": True, "version": APP_VERSION}
 
+    @app.get("/api/system/active-work")
+    async def active_work() -> dict[str, Any]:
+        return {
+            "activeTasks": db.count_active_tasks(),
+            "preparingResources": resources.is_preparing(),
+        }
+
     @app.get("/api/events")
     async def event_stream() -> StreamingResponse:
         return StreamingResponse(

@@ -10,15 +10,11 @@ import { Tooltip } from '@/components/ui/primitives/Tooltip'
 import { BrandMark } from '@/components/brand/brand-mark'
 import { useText } from '@/lib/i18n'
 import { useTheme, type ThemePreference } from '@/lib/theme'
+import { formatDesktopUpdateText } from '@/lib/use-desktop-updates'
 import { NavigationContext } from '@/runtime/features'
+import type { DesktopUpdateState } from '@/lib/desktop-bridge'
 import { cn } from '@/lib/utils'
 import css from './SidebarRoot.module.css'
-
-export interface DesktopUpdateState {
-  status: string
-  version?: string
-  error?: string
-}
 
 export interface SidebarProps {
   pathname: string
@@ -27,6 +23,7 @@ export interface SidebarProps {
   isDarwin?: boolean
   railIn?: boolean
   updateState?: DesktopUpdateState | null
+  onQuitAndInstall?: () => void
   onToggleCollapse: () => void
   onOpenSettings: () => void
   onNavigate?: (path: string) => void
@@ -48,6 +45,7 @@ export function Sidebar({
   isDarwin = false,
   railIn = false,
   updateState,
+  onQuitAndInstall,
   onToggleCollapse,
   onOpenSettings,
   onNavigate,
@@ -96,15 +94,10 @@ export function Sidebar({
   ]
 
   const toggleLabel = collapsed ? tx('nav.expandSidebar') : tx('nav.collapseSidebar')
-  const showUpdatePill = updateState && (updateState.status === 'available' || updateState.status === 'downloading' || updateState.status === 'downloaded')
+  const showUpdatePill = updateState && (updateState.status === 'downloading' || updateState.status === 'downloaded')
   const updateReady = updateState?.status === 'downloaded'
-  const updateLabel = updateReady
-    ? updateState?.version
-      ? tx('app.updates.readyToInstallVersion', { version: updateState.version })
-      : tx('app.updates.readyToInstall')
-    : updateState?.version
-      ? tx('app.updates.availableVersion', { version: updateState.version })
-      : tx('app.updates.available')
+  const updateDownloading = updateState?.status === 'downloading'
+  const updateLabel = formatDesktopUpdateText(updateState ?? null, tx)
   const themeControlLabel = tx('client.theme.control', { current: tx(`client.theme.${theme}`) })
   const tooltipSide = collapsed ? 'right' : 'top'
 
@@ -230,8 +223,8 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => {
-                if (updateReady) void window.youdubDesktop?.quitAndInstall()
-                else void window.youdubDesktop?.checkForUpdates()
+                if (updateReady) onQuitAndInstall?.()
+                else onOpenSettings()
               }}
               aria-label={updateLabel}
               title={updateLabel}
@@ -244,7 +237,7 @@ export function Sidebar({
               )}
             >
               <span className={css.panelGlyph}>
-                <RefreshCw className="size-4" />
+                <RefreshCw className={cn('size-4', updateDownloading && 'animate-spin')} />
               </span>
               {!collapsed && <span className={css.panelTitle}>{updateLabel}</span>}
             </button>

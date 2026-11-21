@@ -1,10 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-
-export interface DesktopUpdateState {
-  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloaded' | 'error'
-  version?: string
-  error?: string
-}
+import type { DesktopUpdateState } from './update-manager'
 
 interface BootstrapPayload {
   platform: string
@@ -44,6 +39,14 @@ if (bootstrap.platform === 'darwin' || bootstrap.platform === 'win32') {
   })
 }
 
+function onChannel<Args extends unknown[]>(channel: string, listener: (...args: Args) => void): () => void {
+  const handler = (_event: IpcRendererEvent, ...args: Args) => listener(...args)
+  ipcRenderer.on(channel, handler)
+  return () => {
+    ipcRenderer.removeListener(channel, handler)
+  }
+}
+
 contextBridge.exposeInMainWorld('youdubDesktop', {
   platform: bootstrap.platform,
   version: bootstrap.version,
@@ -51,13 +54,11 @@ contextBridge.exposeInMainWorld('youdubDesktop', {
   authToken: bootstrap.authToken,
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('youdub:pick-directory'),
   openPath: (targetPath: string): Promise<void> => ipcRenderer.invoke('youdub:open-path', targetPath),
-  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('youdub:check-updates'),
+  getUpdateState: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('youdub:get-update-state'),
+  checkForUpdates: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('youdub:check-updates'),
   quitAndInstall: (): Promise<void> => ipcRenderer.invoke('youdub:quit-and-install'),
-  onUpdateState: (listener: (state: DesktopUpdateState) => void): (() => void) => {
-    const handler = (_event: IpcRendererEvent, state: DesktopUpdateState) => listener(state)
-    ipcRenderer.on('youdub:update-state', handler)
-    return () => {
-      ipcRenderer.removeListener('youdub:update-state', handler)
-    }
-  },
+  setLanguage: (language: string): void => ipcRenderer.send('youdub:set-language', language),
+  onOpenSettings: (listener: () => void): (() => void) => onChannel('youdub:open-settings', listener),
+  onUpdateState: (listener: (state: DesktopUpdateState) => void): (() => void) =>
+    onChannel<[DesktopUpdateState]>('youdub:update-state', listener),
 })

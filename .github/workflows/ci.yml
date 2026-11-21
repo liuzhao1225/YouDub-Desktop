@@ -79,6 +79,7 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund
           npm --prefix apps/desktop install --ignore-scripts --no-audit --no-fund
           npm --prefix apps/desktop run typecheck
+          npm --prefix apps/desktop run test
           npm --prefix apps/desktop run build
           node --test scripts/download-releases.test.mjs
 

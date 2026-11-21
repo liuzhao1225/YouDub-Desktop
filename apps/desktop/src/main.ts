@@ -4,17 +4,30 @@ import { existsSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { delimiter, join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
-import { autoUpdater, type AppUpdater } from 'electron-updater'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeTheme,
+  powerMonitor,
+  safeStorage,
+  shell,
+  type MenuItemConstructorOptions,
+} from 'electron'
+import { autoUpdater } from 'electron-updater'
+import { resolveDesktopLocale, type DesktopMessages } from './desktop-locale'
 import { YouDubInnoUpdater } from './inno-updater'
+import {
+  DesktopUpdateManager,
+  RELEASES_PAGE_URL,
+  formatErrorMessage,
+  hasWindowsSetupUninstaller,
+  type DesktopUpdateState,
+} from './update-manager'
+import { DesktopUpdateDialogCoordinator } from './update-ui'
 
-interface UpdateState {
-  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloaded' | 'error'
-  version?: string
-  error?: string
-}
-
-const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'waiting'])
 const MAX_BACKEND_RESTARTS = 3
 const WIN_TITLEBAR_HEIGHT = 40
 
@@ -47,7 +60,9 @@ let stabilityTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let quitConfirmed = false
 let quitInFlight = false
-let updater: AppUpdater | null = null
+let uiLanguage: string | null = null
+let updateManager: DesktopUpdateManager | null = null
+let updateDialogs: DesktopUpdateDialogCoordinator | null = null
 const recentBackendLogs: string[] = []
 
 function appendLog(chunk: Buffer): void {
@@ -262,9 +277,7 @@ function spawnBackend(): ChildProcess {
     }
     const detail = recentBackendLogs.slice(-10).join('\n') || `Exit status: ${code ?? signal}`
     dialog.showErrorBox('YouDub Backend Error', `The YouDub backend process stopped unexpectedly.\n\n${detail}`)
-    quitConfirmed = true
-    isQuitting = true
-    app.quit()
+    forceQuit()
   })
 
   stabilityTimer = setTimeout(() => {
@@ -346,55 +359,188 @@ function openExternalIfHttp(rawUrl: string): void {
   }
 }
 
-function emitUpdateState(state: UpdateState): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('youdub:update-state', state)
+function getLiveWindow(): BrowserWindow | null {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+}
+
+function focusMainWindow(): BrowserWindow | null {
+  const win = getLiveWindow()
+  if (!win) return null
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  return win
+}
+
+function forceQuit(): void {
+  quitConfirmed = true
+  isQuitting = true
+  app.quit()
+}
+
+function getDesktopLocale() {
+  const systemLocale = app.getPreferredSystemLanguages()[0] || app.getLocale()
+  return resolveDesktopLocale(uiLanguage, systemLocale)
+}
+
+function showDesktopDialog(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  const win = getLiveWindow()
+  return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+}
+
+function openSettingsInWindow(): void {
+  const win = focusMainWindow()
+  if (win) {
+    win.webContents.send('youdub:open-settings')
+  } else if (windowUrl && !isQuitting) {
+    mainWindow = createWindow(windowUrl)
+    mainWindow.webContents.once('did-finish-load', () => {
+      getLiveWindow()?.webContents.send('youdub:open-settings')
+    })
   }
 }
 
-function setupUpdater(): void {
-  const instance: AppUpdater = process.platform === 'win32' ? new YouDubInnoUpdater() : autoUpdater
-  instance.autoDownload = true
-  instance.autoInstallOnAppQuit = false
-  instance.on('checking-for-update', () => emitUpdateState({ status: 'checking' }))
-  instance.on('update-available', (info) => emitUpdateState({ status: 'available', version: info.version }))
-  instance.on('update-not-available', (info) => emitUpdateState({ status: 'not-available', version: info.version }))
-  instance.on('update-downloaded', (info) => emitUpdateState({ status: 'downloaded', version: info.version }))
-  instance.on('error', (error) => emitUpdateState({ status: 'error', error: error.message }))
-  updater = instance
+function buildAppSubmenu(messages: DesktopMessages, isMac: boolean): MenuItemConstructorOptions[] {
+  return [
+    ...(isMac ? [{ role: 'about' as const }] : []),
+    {
+      label: messages.checkUpdatesMenu,
+      click: () => {
+        void updateDialogs?.openFromMenu().catch((err) => {
+          console.error('[updater] Failed to open update dialog from menu:', err)
+        })
+      },
+    },
+    { type: 'separator' },
+    { label: messages.settingsMenu, accelerator: 'CmdOrCtrl+,', click: openSettingsInWindow },
+    ...(isMac
+      ? [
+          { type: 'separator' as const },
+          { role: 'services' as const },
+          { type: 'separator' as const },
+          { role: 'hide' as const },
+          { role: 'hideOthers' as const },
+          { role: 'unhide' as const },
+          { type: 'separator' as const },
+        ]
+      : []),
+    { role: 'quit' },
+  ]
 }
 
-async function hasActiveTasks(): Promise<boolean> {
+function refreshApplicationMenu(): void {
+  const { messages } = getDesktopLocale()
+  const isMac = process.platform === 'darwin'
+  const viewSubmenu: MenuItemConstructorOptions[] = [
+    { role: 'reload' },
+    { role: 'forceReload' },
+    ...(!app.isPackaged ? [{ role: 'toggleDevTools' as const }] : []),
+    { type: 'separator' },
+    { role: 'resetZoom' },
+    { role: 'zoomIn' },
+    { role: 'zoomOut' },
+    { type: 'separator' },
+    { role: 'togglefullscreen' },
+  ]
+  const template: MenuItemConstructorOptions[] = [
+    { label: 'YouDub', submenu: buildAppSubmenu(messages, isMac) },
+    ...(isMac ? [{ role: 'fileMenu' as const }] : []),
+    { role: 'editMenu' },
+    { label: messages.viewMenu, submenu: viewSubmenu },
+    { role: 'windowMenu' },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+async function hasActiveWork(): Promise<boolean> {
   if (!backendUrl) return false
   try {
-    const res = await fetch(`${backendUrl}/api/tasks?limit=20&offset=0`, {
-      headers: { Authorization: `Bearer ${authToken}` },
+    const headers: Record<string, string> = authToken ? { Authorization: `Bearer ${authToken}` } : {}
+    const res = await fetch(`${backendUrl}/api/system/active-work`, {
+      headers,
       signal: AbortSignal.timeout(2000),
     })
     if (!res.ok) return false
-    const data = (await res.json()) as { items?: Array<{ status?: string }> }
-    return (data.items ?? []).some((task) => ACTIVE_TASK_STATUSES.has(String(task.status ?? '')))
+    const data = (await res.json()) as { activeTasks?: unknown; preparingResources?: unknown }
+    return (typeof data.activeTasks === 'number' && data.activeTasks > 0) || data.preparingResources === true
   } catch {
     return false
   }
 }
 
-async function confirmQuitIfActiveTasks(): Promise<boolean> {
-  if (!(await hasActiveTasks())) return true
-  const options: Electron.MessageBoxOptions = {
+async function confirmQuitIfActiveWork(): Promise<boolean> {
+  if (!(await hasActiveWork())) return true
+  const { messages } = getDesktopLocale()
+  const result = await showDesktopDialog({
     type: 'warning',
-    buttons: ['Quit', 'Cancel'],
+    buttons: [messages.quitButton, messages.cancelButton],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
     title: 'YouDub',
-    message: 'Tasks are still running or queued.',
-    detail: 'Quitting YouDub now will interrupt active tasks.',
-  }
-  const result = mainWindow && !mainWindow.isDestroyed()
-    ? await dialog.showMessageBox(mainWindow, options)
-    : await dialog.showMessageBox(options)
+    message: messages.quitActiveTasksMessage,
+    detail: messages.quitActiveTasksDetail,
+  })
   return result.response === 0
+}
+
+async function confirmAndShutdownForQuit(): Promise<boolean> {
+  if (quitConfirmed) return true
+  if (quitInFlight) return false
+  quitInFlight = true
+  try {
+    if (!(await confirmQuitIfActiveWork())) return false
+    quitConfirmed = true
+    isQuitting = true
+    await shutdownServices()
+    return true
+  } finally {
+    quitInFlight = false
+  }
+}
+
+function setupUpdater(): DesktopUpdateManager {
+  const isWindowsSetup = app.isPackaged && process.platform === 'win32' && hasWindowsSetupUninstaller(app.getPath('exe'))
+  const updaterInstance = app.isPackaged
+    ? (process.platform === 'win32' ? (isWindowsSetup ? new YouDubInnoUpdater() : null) : autoUpdater)
+    : null
+  if (updaterInstance) {
+    updaterInstance.autoDownload = false
+    updaterInstance.autoInstallOnAppQuit = false
+    updaterInstance.disableDifferentialDownload = true
+    updaterInstance.disableWebInstaller = true
+    updaterInstance.allowDowngrade = false
+  }
+
+  const manager = new DesktopUpdateManager({
+    isPackaged: app.isPackaged,
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    isWindowsSetup: () => isWindowsSetup,
+    updater: updaterInstance,
+    emitState: (state: DesktopUpdateState) => {
+      getLiveWindow()?.webContents.send('youdub:update-state', state)
+    },
+    beforeInstall: confirmAndShutdownForQuit,
+    onReady: (version) => {
+      void updateDialogs?.promptReady(version)
+    },
+    onPostStopInstallError: (message) => {
+      void updateDialogs?.handlePostStopInstallError(message)
+    },
+  })
+
+  updateDialogs = new DesktopUpdateDialogCoordinator({
+    manager,
+    getMessages: () => getDesktopLocale().messages,
+    showDialog: showDesktopDialog,
+    isWindowVisible: () => Boolean(getLiveWindow()?.isVisible() && !isQuitting),
+    openDownloadsPage: () => openExternalIfHttp(RELEASES_PAGE_URL),
+    onPostStopDialogClosed: forceQuit,
+  })
+  updateManager = manager
+  return manager
 }
 
 function createWindow(loadUrl: string): BrowserWindow {
@@ -434,6 +580,12 @@ function createWindow(loadUrl: string): BrowserWindow {
   })
 
   win.once('ready-to-show', () => win.show())
+  win.on('focus', () => {
+    void updateManager?.checkIfDue()
+  })
+  win.on('show', () => {
+    void updateDialogs?.promptReady()
+  })
   win.on('enter-full-screen', () => win.webContents.send('youdub:fullscreen', true))
   win.on('leave-full-screen', () => win.webContents.send('youdub:fullscreen', false))
   win.on('closed', () => {
@@ -454,22 +606,21 @@ function createWindow(loadUrl: string): BrowserWindow {
   return win
 }
 
-function registerIpcHandlers(): void {
+function registerCoreIpcHandlers(): void {
   ipcMain.on('youdub:bootstrap', (event) => {
     event.returnValue = {
       platform: process.platform,
       version: app.getVersion(),
       backendUrl,
       authToken,
-      isFullScreen: mainWindow?.isFullScreen() ?? false,
+      isFullScreen: getLiveWindow()?.isFullScreen() ?? false,
     }
   })
 
   ipcMain.handle('youdub:pick-directory', async () => {
     const options: Electron.OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
-    const result = mainWindow && !mainWindow.isDestroyed()
-      ? await dialog.showOpenDialog(mainWindow, options)
-      : await dialog.showOpenDialog(options)
+    const win = getLiveWindow()
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
 
@@ -481,35 +632,36 @@ function registerIpcHandlers(): void {
     if (err) throw new Error(err)
   })
 
-  ipcMain.handle('youdub:check-updates', async () => {
-    if (!app.isPackaged || !updater) {
-      emitUpdateState({ status: 'not-available', version: app.getVersion() })
-      return
+  ipcMain.on('youdub:set-language', (_event, nextLanguage: unknown) => {
+    if (typeof nextLanguage !== 'string' || !nextLanguage.trim()) return
+    const previousId = getDesktopLocale().id
+    uiLanguage = nextLanguage.trim()
+    if (getDesktopLocale().id !== previousId) {
+      refreshApplicationMenu()
     }
-    await updater.checkForUpdates()
   })
+}
 
+function registerUpdateIpcHandlers(manager: DesktopUpdateManager): void {
+  ipcMain.handle('youdub:get-update-state', () => manager.getState())
+  ipcMain.handle('youdub:check-updates', () => manager.check(true))
   ipcMain.handle('youdub:quit-and-install', async () => {
-    if (!app.isPackaged || !updater) return
-    if (!(await confirmQuitIfActiveTasks())) return
-    quitConfirmed = true
-    isQuitting = true
-    await shutdownServices()
-    updater.quitAndInstall()
+    await manager.install()
   })
 }
 
 if (gotSingleInstanceLock) {
+  const onSystemResume = (): void => {
+    void updateManager?.checkIfDue()
+  }
+
   app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    focusMainWindow()
   })
 
   nativeTheme.on('updated', () => {
-    if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setTitleBarOverlay(titleBarOverlayOptions())
+    if (process.platform === 'win32') {
+      getLiveWindow()?.setTitleBarOverlay(titleBarOverlayOptions())
     }
   })
 
@@ -533,27 +685,28 @@ if (gotSingleInstanceLock) {
     }
   })
 
+  app.on('will-quit', () => {
+    powerMonitor.off('resume', onSystemResume)
+    updateDialogs?.dispose()
+    updateManager?.dispose()
+  })
+
   app.on('before-quit', (event) => {
     if (quitConfirmed) return
     event.preventDefault()
     if (quitInFlight) return
-    quitInFlight = true
-    void (async () => {
-      const proceed = await confirmQuitIfActiveTasks()
-      if (!proceed) {
-        quitInFlight = false
-        return
-      }
-      quitConfirmed = true
-      isQuitting = true
-      await shutdownServices()
-      app.quit()
-    })()
+    void confirmAndShutdownForQuit().then((proceed) => {
+      if (proceed) app.quit()
+    })
   })
 
   void app.whenReady().then(async () => {
-    registerIpcHandlers()
-    if (app.isPackaged) setupUpdater()
+    app.setAboutPanelOptions({ applicationName: 'YouDub', applicationVersion: app.getVersion(), version: '' })
+    const manager = setupUpdater()
+    refreshApplicationMenu()
+    registerCoreIpcHandlers()
+    registerUpdateIpcHandlers(manager)
+    powerMonitor.on('resume', onSystemResume)
 
     const bridge = await startSecretsBridge()
     secretsServer = bridge.server
@@ -579,17 +732,13 @@ if (gotSingleInstanceLock) {
     mainWindow = createWindow(loadUrl)
     console.log(`YouDub Desktop ready: ${backendUrl}`)
 
-    if (app.isPackaged && updater) {
-      setTimeout(() => {
-        void updater?.checkForUpdates().catch(() => {})
-      }, 5000).unref()
-    }
+    manager.startPolling()
   }).catch((error) => {
     const detail = recentBackendLogs.slice(-10).join('\n')
-    const message = error instanceof Error ? error.message : String(error)
+    const message = formatErrorMessage(error)
     dialog.showErrorBox('YouDub Startup Error', detail ? `${message}\n\n${detail}` : message)
     quitConfirmed = true
     isQuitting = true
-    void shutdownServices().finally(() => app.quit())
+    void shutdownServices().finally(forceQuit)
   })
 }

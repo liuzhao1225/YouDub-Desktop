@@ -1,8 +1,11 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
+import { createMockDesktopBridge } from '@/test/desktop-bridge'
 import { ThemeProvider } from '@/lib/theme'
+import type { DesktopUpdateState } from '@/lib/desktop-bridge'
+import { AppShell } from '@/components/shell/AppShell'
 import { SettingsModal, type LLMProviderView, type SettingsTab } from './SettingsModal'
 
 afterEach(() => {
@@ -108,16 +111,7 @@ function mountModal(initialTab: SettingsTab = 'general', initialProviders: LLMPr
 
 it('updates language, theme, data directory (with directory picker), and proxy URL in the General tab', async () => {
   const pickDirectory = vi.fn(async () => '/Volumes/Media/YouDub')
-  window.youdubDesktop = {
-    platform: 'darwin',
-    version: '2.0.0',
-    backendUrl: 'http://127.0.0.1:8765',
-    pickDirectory,
-    openPath: vi.fn(async () => {}),
-    checkForUpdates: vi.fn(),
-    quitAndInstall: vi.fn(),
-    onUpdateState: vi.fn(() => () => {}),
-  }
+  window.youdubDesktop = createMockDesktopBridge({ pickDirectory })
 
   const { request } = mountModal('general')
   const user = userEvent.setup()
@@ -234,4 +228,141 @@ it('adds from preset, discovers models, tests connection, saves, clears API key,
       expect.objectContaining({ method: 'DELETE' }),
     ),
   )
+})
+
+it('renders desktop version & update controls in the General tab across check, progress, ready, and error states', async () => {
+  let listener: ((state: DesktopUpdateState) => void) | undefined
+  const getUpdateState = vi.fn(async (): Promise<DesktopUpdateState> => ({ status: 'idle' }))
+  const checkForUpdates = vi.fn(async (): Promise<DesktopUpdateState> => ({ status: 'not-available', version: '2.0.0' }))
+  const quitAndInstall = vi.fn(async () => {})
+
+  window.youdubDesktop = createMockDesktopBridge({
+    getUpdateState,
+    checkForUpdates,
+    quitAndInstall,
+    onUpdateState: (cb) => {
+      listener = cb
+      return () => {}
+    },
+  })
+
+  mountModal('general')
+  const user = userEvent.setup()
+
+  expect(await screen.findByText('版本与更新')).toBeInTheDocument()
+  expect(screen.getByText('当前版本 v2.0.0')).toBeInTheDocument()
+  await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(1))
+
+  await user.click(screen.getByRole('button', { name: '检查更新' }))
+  expect(checkForUpdates).toHaveBeenCalledTimes(1)
+  expect(await screen.findByText('当前已是最新版本')).toBeInTheDocument()
+
+  act(() => {
+    listener?.({ status: 'downloading', version: '2.1.0', percent: 42 })
+  })
+  expect(await screen.findByText('正在下载 v2.1.0 (42%)')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '正在下载更新…' })).toBeDisabled()
+
+  act(() => {
+    listener?.({ status: 'error', error: 'net::ERR_CONNECTION_TIMED_OUT' })
+  })
+  expect(await screen.findByText('net::ERR_CONNECTION_TIMED_OUT')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '重试检查' })).toBeEnabled()
+
+  act(() => {
+    listener?.({ status: 'downloaded', version: '2.1.0' })
+  })
+  expect(await screen.findByText('重启安装 v2.1.0')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '重启以安装更新' }))
+  expect(quitAndInstall).toHaveBeenCalledTimes(1)
+})
+
+it('shows Releases download link and hides update actions when desktop updates are unsupported', async () => {
+  let resolveInitial!: (state: DesktopUpdateState) => void
+  let listener: ((state: DesktopUpdateState) => void) | undefined
+
+  window.youdubDesktop = createMockDesktopBridge({
+    platform: 'win32',
+    getUpdateState: vi.fn(
+      () =>
+        new Promise<DesktopUpdateState>((resolve) => {
+          resolveInitial = resolve
+        }),
+    ),
+    onUpdateState: (cb) => {
+      listener = cb
+      return () => {}
+    },
+  })
+
+  mountModal('general')
+
+  // Live unsupported state arrives before slow getUpdateState resolves; slow hydration must not clobber it
+  act(() => {
+    listener?.({ status: 'unsupported', reason: 'windows-portable' })
+  })
+  await act(async () => {
+    resolveInitial({ status: 'idle' })
+    await Promise.resolve()
+  })
+
+  expect(await screen.findByText(/Windows 便携版/)).toBeInTheDocument()
+  const link = screen.getByRole('link', { name: '打开下载页' })
+  expect(link).toHaveAttribute('href', 'https://github.com/liuzhao1225/YouDub-Desktop/releases/latest')
+  expect(link).toHaveAttribute('target', '_blank')
+  expect(screen.queryByRole('button', { name: '检查更新' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '重启以安装更新' })).not.toBeInTheDocument()
+})
+
+it('shares one desktop update store across AppShell and SettingsModal without duplicate subscriptions', async () => {
+  let listener: ((state: DesktopUpdateState) => void) | undefined
+  const getUpdateState = vi.fn(async (): Promise<DesktopUpdateState> => ({ status: 'idle' }))
+  const checkForUpdates = vi.fn(
+    async (): Promise<DesktopUpdateState> => ({ status: 'downloading', version: '2.1.0', percent: 35 }),
+  )
+  const onUpdateState = vi.fn((cb: (state: DesktopUpdateState) => void) => {
+    listener = cb
+    return () => {}
+  })
+
+  window.youdubDesktop = createMockDesktopBridge({
+    getUpdateState,
+    checkForUpdates,
+    onUpdateState,
+  })
+
+  const request = vi.fn(async (path: string) => {
+    if (path === '/api/settings') {
+      return {
+        ui_language: 'zh',
+        theme: 'system',
+        data_dir: '/Users/test/.youdub',
+        default_data_dir: '/Users/test/.youdub',
+        proxy_url: '',
+      }
+    }
+    return { items: [] }
+  })
+
+  render(
+    <ThemeProvider>
+      <LanguageProvider>
+        <AppShell pathname="/" onNavigate={() => {}} onOpenSettings={() => {}}>
+          <SettingsModal open onClose={() => {}} initialTab="general" request={request as never} />
+        </AppShell>
+      </LanguageProvider>
+    </ThemeProvider>,
+  )
+
+  await waitFor(() => expect(getUpdateState).toHaveBeenCalledTimes(1))
+  expect(onUpdateState).toHaveBeenCalledTimes(1)
+
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: '检查更新' }))
+  await waitFor(() => expect(screen.getAllByText('正在下载 v2.1.0 (35%)')).toHaveLength(2))
+
+  act(() => {
+    listener?.({ status: 'downloaded', version: '2.1.0' })
+  })
+  expect(screen.getAllByText('重启安装 v2.1.0')).toHaveLength(2)
 })
