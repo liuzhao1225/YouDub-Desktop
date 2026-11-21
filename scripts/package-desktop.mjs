@@ -5,7 +5,7 @@ import { cpSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { appVersion } from './release-version.mjs'
 import { desktopUpdateConfig, writeUpdateFeed } from './desktop-update-feed.mjs'
 
@@ -85,6 +85,25 @@ function findFileRecursive(dir, targetName) {
   return null
 }
 
+function extractTarGz(archivePath, destDir) {
+  const tarBin =
+    process.platform === 'win32' &&
+    existsSync(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'))
+      ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar'
+  execFileSync(
+    tarBin,
+    [
+      '-xzf',
+      relative(cacheDir, archivePath).replace(/\\/g, '/'),
+      '--strip-components=1',
+      '-C',
+      relative(cacheDir, destDir).replace(/\\/g, '/'),
+    ],
+    { cwd: cacheDir, stdio: 'inherit' },
+  )
+}
+
 async function prepareBundledRuntime() {
   const manifest = JSON.parse(await readFile(join(root, 'backend/app/manifests/setup-runtime.json'), 'utf8'))
   const platformKey =
@@ -136,7 +155,7 @@ async function prepareBundledRuntime() {
           const extracted = findFileRecursive(stagedUvDir, uvExe)
           if (extracted && extracted !== stagedUvBin) await copyFile(extracted, stagedUvBin)
         } else {
-          execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', stagedUvDir], { stdio: 'inherit' })
+          extractTarGz(archive, stagedUvDir)
         }
       }
     }
@@ -180,7 +199,7 @@ async function prepareBundledRuntime() {
       if (!pySpec) throw new Error(`No standalone Python manifest entry for ${platformKey}`)
       const archive = join(cacheDir, pySpec.path)
       await downloadVerified([pySpec.url, ...(pySpec.mirrors || [])], archive, pySpec.sha256)
-      execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', stagedPythonDir], { stdio: 'inherit' })
+      extractTarGz(archive, stagedPythonDir)
     }
     if (!win) execFileSync('chmod', ['-R', 'u+rwX,go+rX', stagedPythonDir], { stdio: 'inherit' })
 
