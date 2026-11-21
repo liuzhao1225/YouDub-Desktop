@@ -16,7 +16,7 @@ type Preview = { reusedSteps: string[]; dirtySteps: string[]; expectedAttempt: n
 export function WorkflowRerun({ taskId, document, types, onStarted, onLockChange, request, navigate, useQuery, useSlot, useWorkflowResources }: { taskId: string; document: WorkflowDocument; types: NodeTypeDefinition[]; onStarted(): void; onLockChange(locked: boolean): void } & Bindings<'request' | 'navigate' | 'useQuery' | 'useSlot' | 'useWorkflowResources'>) {
   const tx = useText(), { language } = useI18n()
   const activeView = useActiveView()
-  const task = useQuery<TaskView>(`/api/v2/tasks/${taskId}`, 2000, taskNeedsPolling)
+  const task = useQuery<TaskView>(`/api/tasks/${taskId}`, 2000, taskNeedsPolling)
   const resources = useWorkflowResources(document)
   const [preview, setPreview] = useState<{ document: string; result: Preview } | null>(null)
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [pending, setPending] = useState('')
@@ -39,7 +39,7 @@ export function WorkflowRerun({ taskId, document, types, onStarted, onLockChange
     if (!task.data || !terminal || locked || !resources.ready) return
     setBusy(true); setError(''); setDiagnostics([])
     try {
-      const result = await request<Preview>(`/api/v2/tasks/${taskId}/rerun-preview`, { method: 'POST', body: JSON.stringify({ config: {}, graphDocument: document, nodeRuntimeInputs: runtimeInputs, expectedAttempt: task.data.attempt, expectedTaskRevision: task.data.revision }) })
+      const result = await request<Preview>(`/api/tasks/${taskId}/rerun-preview`, { method: 'POST', body: JSON.stringify({ config: {}, graphDocument: document, nodeRuntimeInputs: runtimeInputs, expectedAttempt: task.data.attempt, expectedTaskRevision: task.data.revision }) })
       setPreview({ document: fingerprint, result })
     } catch (failure) { fail(failure) }
     finally { setBusy(false) }
@@ -49,7 +49,7 @@ export function WorkflowRerun({ taskId, document, types, onStarted, onLockChange
     setBusy(true); setError(''); setDiagnostics([])
     const id = crypto.randomUUID(); setPending(id)
     try {
-      const next = await request<TaskView>(`/api/v2/tasks/${taskId}/rerun`, { method: 'POST', body: JSON.stringify({ ...current, id, config: {}, graphDocument: document, nodeRuntimeInputs: runtimeInputs }) })
+      const next = await request<TaskView>(`/api/tasks/${taskId}/rerun`, { method: 'POST', body: JSON.stringify({ ...current, id, config: {}, graphDocument: document, nodeRuntimeInputs: runtimeInputs }) })
       if (activeView.current) { onStarted(); navigate(`/tasks/${next.id}`) }
     } catch (failure) { fail(failure) }
     finally { setBusy(false) }
@@ -60,7 +60,7 @@ export function WorkflowRerun({ taskId, document, types, onStarted, onLockChange
     {document.nodes.map((node) => { const definition = nodeDefinition(node, types); return definition?.runtimeInputSchema ? <fieldset key={node.id} className="space-y-3"><legend className="mb-2 text-sm font-medium">{node.label || text(definition.label, language)}</legend><ConfigEditor useSlot={useSlot} ownerId={`runtime:${node.type}`} schema={definition.runtimeInputSchema} value={runtimeInputs[node.id]} diagnostics={[]} readOnly={locked || !task.data} onChange={(value) => { setRuntime((current) => ({ ...current, [node.id]: value })); setPreview(null); setDiagnostics([]) }} /></fieldset> : null })}
     <WorkflowResources resources={resources} types={types} disabled={locked} />
     {task.data?.status === 'paused' && <><InlineAlert tone="warning">{tx("workflow.rerun.the.original.task.is.awaiting.review.stop.it.before.rerunning")}</InlineAlert><Button variant="outline" disabled={locked} onClick={() => {
-      setBusy(true); setError(''); void request(`/api/v2/tasks/${taskId}/cancel`, { method: 'POST', body: JSON.stringify({ expectedAttempt: task.data!.attempt, expectedTaskRevision: task.data!.revision }) }).then(task.refresh).catch(fail).finally(() => setBusy(false))
+      setBusy(true); setError(''); void request(`/api/tasks/${taskId}/cancel`, { method: 'POST', body: JSON.stringify({ expectedAttempt: task.data!.attempt, expectedTaskRevision: task.data!.revision }) }).then(task.refresh).catch(fail).finally(() => setBusy(false))
     }}><Square />{tx("workflow.rerun.stop.original.task")}</Button></>}
     {task.data && !terminal && task.data.status !== 'paused' && <InlineAlert tone="warning">{tx("workflow.rerun.wait.for.the.original.task.to.finish.or.stop.it.from.its.task.pag")}</InlineAlert>}
     {!locked && <Link href={`/tasks/${taskId}`} className="inline-block text-sm text-link">{tx("workflow.rerun.back.to.original.task")}</Link>}
@@ -69,8 +69,8 @@ export function WorkflowRerun({ taskId, document, types, onStarted, onLockChange
     {!current && <div><Button variant="outline" disabled={!terminal || locked || !resources.ready} onClick={() => void check()}>{busy ? <Loader2 className="animate-spin" /> : <GitBranch />}{tx("workflow.rerun.review.rerun.scope")}</Button></div>}
     {current && <><div className="space-y-2 text-sm"><p>{tx("workflow.rerun.keep.results")}: {nodeNames(current.reusedSteps)}</p><p>{tx("workflow.rerun.process.again")}: {nodeNames(current.dirtySteps)}</p></div><p className="text-xs text-muted-foreground">{tx("workflow.rerun.creates.a.new.task.using.the.original.media")}</p><Button disabled={!terminal || locked || !resources.ready} onClick={() => void run()}>{busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}{tx("workflow.rerun.run.again")}</Button></>}
     {pending && !busy && <div className="space-y-3"><p className="text-sm text-muted-foreground">{tx("workflow.rerun.check.whether.the.task.was.created.before.submitting.again")}</p><div className="flex flex-wrap gap-2">
-      <Button variant="outline" onClick={() => { setBusy(true); void request<TaskView>(`/api/v2/tasks/${pending}`).then((next) => { onStarted(); navigate(`/tasks/${next.id}`) }).catch(fail).finally(() => setBusy(false)) }}>{tx("workflow.rerun.check.created.task")}</Button>
-      <Button variant="outline" onClick={() => { setBusy(true); void request(`/api/v2/imports/${pending}`, { method: 'DELETE' }).then(() => { setPending(''); setPreview(null); setError(''); setDiagnostics([]) }).catch(fail).finally(() => setBusy(false)) }}>{tx("workflow.rerun.discard.submission.and.edit")}</Button>
+      <Button variant="outline" onClick={() => { setBusy(true); void request<TaskView>(`/api/tasks/${pending}`).then((next) => { onStarted(); navigate(`/tasks/${next.id}`) }).catch(fail).finally(() => setBusy(false)) }}>{tx("workflow.rerun.check.created.task")}</Button>
+      <Button variant="outline" onClick={() => { setBusy(true); void request(`/api/imports/${pending}`, { method: 'DELETE' }).then(() => { setPending(''); setPreview(null); setError(''); setDiagnostics([]) }).catch(fail).finally(() => setBusy(false)) }}>{tx("workflow.rerun.discard.submission.and.edit")}</Button>
     </div></div>}
   </section>
 }

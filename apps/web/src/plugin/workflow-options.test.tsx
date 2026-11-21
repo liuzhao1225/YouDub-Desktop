@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
 import type { Bindings, JsonObject, NodeTypeDefinition, WorkflowDocument } from './sdk'
 import { WorkflowOptions } from './builtin/workflow-options'
-import { nodeDescriptors } from '../../../../packages/builtin/src/node-contracts'
+import { nodeDescriptors } from '@/lib/node-descriptors'
 
 const type: NodeTypeDefinition = { type: 'test.options', version: '1', label: '节点', category: 'test', providerId: 'test', operation: 'test', provider: { id: 'test', operations: [] }, inputs: [], outputs: [], defaults: {}, configSchema: { type: 'object' }, ui: { quickFields: [] } }
 const useSlot = (() => []) as Bindings<'useSlot'>['useSlot']
@@ -27,7 +27,7 @@ it('renders accessible language choices from node metadata without restricting t
   expect(trigger).toHaveTextContent('原文语言自动识别')
   expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
   expect(trigger).toHaveAttribute('aria-expanded', 'false')
-  expect(descriptor.configSchema.properties.sourceLanguage.enum).toBeUndefined()
+  expect((descriptor.configSchema.properties.sourceLanguage as { enum?: unknown }).enum).toBeUndefined()
   const user = userEvent.setup()
   await user.click(trigger)
   expect(trigger).toHaveAttribute('aria-expanded', 'true')

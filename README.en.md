@@ -97,7 +97,7 @@ Task details: preview the video, inspect processing steps, and download dubbed a
 
 First startup prepares the base runtime. Models and inference dependencies are prepared for the selected workflow. See the [installation guide](docs/upgrade.md) for requirements and upgrade instructions.
 
-1. Add a provider, API key and translation model during first setup or in Settings → Models.
+1. Add an LLM provider, API key, and translation model in Settings → LLM Providers.
 2. Import a video in the workspace, choose a workflow and adjust its node options, then prepare the required resources and create a task.
 3. In the task library, follow progress and play or download the result.
 
@@ -111,82 +111,67 @@ QQ group: `618246010`
 
 ## Run YouDub Desktop from source
 
-YouDub uses the DeepSeek Harness backend and frontend framework with Electron, retaining its video workflows and business UI. Start with the [developer documentation](apps/harness/docs/README.md), [architecture](apps/harness/docs/ARCHITECTURE.md), and [local development guide](apps/harness/docs/DEVELOPMENT.md) (in Chinese).
+YouDub uses a clean three-layer architecture: an ultra-thin **Electron desktop shell** (`apps/desktop`), a **Vite 8 + React 19 SPA** (`apps/web`), and a **pure Python FastAPI runtime** (`backend/app/server` + `backend/app/v1`).
 
-Use Node.js `^22.19.0 || >=24.0.0`, npm, Git and your platform's build tools. Initialize submodules when cloning, then run these commands from the repository root:
+Requirements: Node.js `^22.19.0 || >=24.0.0`, Python `3.12` (`.venv` or `uv`), npm, and Git. Initialize submodules when cloning, then run from the repository root:
 
 ```bash
-npm ci --registry=https://registry.npmmirror.com
 npm --prefix apps/web ci --registry=https://registry.npmmirror.com
-npm --prefix apps/harness ci --registry=https://registry.npmmirror.com
-npm run build:framework
-npm run build:youdub
+npm --prefix apps/desktop ci --registry=https://registry.npmmirror.com
+npm run build
 npm start
 ```
 
-`npm run package:desktop -- --dir` creates the standalone Electron app. See [release packaging](docs/releasing.md) for signing, notarization and installers.
+Development commands:
 
-On first launch, select the interface language and data directory, prepare runtime resources and configure a translation model through the UI. The application uses its own Python environment, models and configuration. Translation models must accept at least **65,535** output tokens; incompatible endpoints report an error. Base environment readiness and workflow resource readiness are shown separately.
+- `npm run dev`: starts Python FastAPI (`8765`), Vite 8 dev server (`5173`), and the Electron window together.
+- `npm run dev:web` / `node scripts/dev.mjs --web-only`: runs the Vite 8 SPA + Python FastAPI server for browser debugging.
+- `npm run package:desktop -- --dir`: packages the standalone desktop app. See [release packaging](docs/releasing.md) for signing, notarization and installers.
 
-The previous runtime, Swift/C# shells and release process remain available in the [pre-refactor instructions](https://github.com/liuzhao1225/YouDub-webui/blob/711e40e8e69d2c6f2065f15aecc90550dcbf695d/README.en.md#running-the-main-branch-from-source). Harness provenance and the retained subset are documented in the [source notes](vendor/deepseek-harness/README.md).
+On first launch, select the interface language and data directory, then prepare FFmpeg, `yt-dlp`, Python packages, and local ML models (Whisper defaults to `large-v3-turbo`, with optional variant downloads and one-click `yt-dlp` updates in Resources).
 
-## Everything is a plugin
-
-YouDub Desktop composes its backend and frontend with Harness's Cordis runtime. Electron windows, Host lifecycle, Connection, model configuration, LLM, Subprocess, Jobs and plugin management reuse Harness. YouDub tasks, workflows, subtitles, dubbing, resources and business pages run as plugins. The [product composition](apps/harness/cordis.patch.yml) defines the active services and pages.
+## Architecture Overview
 
 ```text
-YouDub Electron → Harness Desktop Host ← Official Connection ← YouDub pages
-                         ↓
-                 YouDub workflow and task plugins
-                         ↓
-             Harness LLM / Subprocess / Jobs
-                         ↓
-              Translation / Python media processing
+apps/desktop (Electron main process & safeStorage credential bridge)
+      ↕  HTTP / SSE (/api/events)
+backend/app/server (FastAPI + SQLite WAL + DAG engine + LLM client + ResourceManager)
+      ↕  Child-process ML stages
+backend/app/v1 (Whisper + SentenceX + Demucs + Qwen Aligner + VoxCPM2 + FFmpeg)
 ```
 
-The frontend uses Harness Renderer, Slots, Layout, Store, themes, locales and shared controls with YouDub's business components, React Flow canvas and animated home screen. See the [architecture](apps/harness/docs/ARCHITECTURE.md), [frontend guide](apps/harness/docs/FRONTEND-DEVELOPMENT.md), and [backend and workflow guide](apps/harness/docs/BACKEND-DEVELOPMENT.md) for implementation boundaries and source mappings.
-
-## Installing and developing plugins
-
-Manage plugins in the application's Extensions page. Harness PluginManager handles installation, enabling, disabling and removal. Nodes, providers and pages follow YouDub's business contracts. Host/Client/Python examples are described in the [backend and extensions guide](apps/harness/docs/BACKEND-DEVELOPMENT.md). A public YouDub plugin marketplace is not currently available.
+- **Single Python backend**: `backend/app/server/` owns `/api/*` REST endpoints, single-channel SSE (`/api/events`), multi-protocol LLM translation (OpenAI / Anthropic / Gemini with checkpointed per-sentence context), SQLite WAL persistence, and DAG execution spawning isolated Python stage subprocesses to release GPU/RAM cleanly after each stage.
+- **Owned React 19 SPA**: `apps/web/` owns its Vite 8 build, Tailwind CSS v4 styles, UI primitives, `@xyflow/react` workflow canvas, node-level review editors, and Settings modal.
+- **Ultra-thin Electron shell**: `apps/desktop/` handles single-instance lock, loopback `safeStorage` bridge, Python backend supervision, native macOS/Windows window chrome, directory picking, and auto-updates.
 
 ## Current Scope
 
-- **English sentence boundaries.** After Whisper recognition, NLTK Punkt forms complete sentences and word timestamps locate their source audio. Raw recognition results are retained.
-- The default workflow accepts local `mp4`, `mov`, `mkv` and `webm` videos. Default limits are 4 GiB, 10 minutes, 1920 pixels for each dimension, and 60 fps.
-- The language catalog contains English, Chinese and Japanese; support depends on the provider. Optional Qwen alignment supports English and Chinese.
-- Node workflows support branches, joins and manual corrections, with one execution slot. Waiting for manual confirmation releases that slot. Plugin changes apply after restart. Hot replacement, a plugin marketplace, cycles and distributed workers remain outside the current scope.
-- Local workflow, Client and Python plugins have been validated. Installation from remote GitHub/npm sources has not yet been validated.
-- Current product APIs use `/api/v2` and support rerunning from a selected step. The old FastAPI/v1 HTTP entry points have been removed. Video URL downloads use `media.download/v1` and support single-video YouTube, Shorts, Bilibili and b23.tv links through yt-dlp, Node.js and FFmpeg, with the same duration and file-size limits.
-
-Read the [runtime guide](docs/design/cordis-plugin-runtime.md#1-安装与配置) before upgrading an older installation or migrating data. Real-task validation and unverified areas are recorded in the [migration report](https://github.com/liuzhao1225/YouDub-webui/blob/c92b670f079428eed40ca6ab7bdfd69e3328fef4/docs/design/cordis-plugin-migration.md), [sentence segmentation results](docs/validation/asr-punkt-sentences-2026-10-09.json) and [subtitle display results](docs/validation/subtitle-display-2026-10-09.json).
+- **Sentence segmentation**: Uses `SentenceX` with Whisper word timestamps to form clean sentence boundaries while preserving word-level timing.
+- **Translation protocols**: Native support for OpenAI, Anthropic, and Gemini APIs with rolling context and per-sentence checkpoint recovery.
+- **Inputs**: Supports local video formats and single-video YouTube, Shorts, Bilibili, and b23.tv URLs via `yt-dlp` + FFmpeg with no artificial duration or resolution caps.
+- **Workflow graphs**: Directed acyclic workflows via `@xyflow/react` supporting per-node options, review pauses, inline subtitle/translation corrections, and partial reruns.
 
 ## Development and Tests
 
 ```bash
+.venv/bin/pytest
 npm run typecheck
+npm run lint
 npm test
-npm run test:backend
-npm --prefix apps/web test
-npm run lint:web
-npm run build:youdub
-npm --prefix apps/harness test
+npm run build
 ```
 
 ```text
-apps/harness/      Electron entry, Host/Client plugins and development tools
-vendor/deepseek-harness/source/  Active Harness framework fork
-packages/builtin/test/helpers/  Domain test fixtures; the product boots through Harness Host
-packages/sdk/      Public service, workflow and operation contracts
-packages/builtin/  Services, generic task engine, workflows and model bridge
-backend/workers/   Python computation and SQLite transaction bridge
-backend/app/       Models, media, credentials and historical data formats
-apps/web/          Reused business components, client logic and React bindings
-fixtures/plugins/  Standalone Host/Client/Python examples
-submodule/demucs/   Demucs source submodule
+backend/app/server/  FastAPI control plane, SQLite store, DAG runner, LLM client, ResourceManager & SSE hub
+backend/app/v1/      Whisper, Demucs, Qwen Aligner, VoxCPM2 & FFmpeg media processing core
+backend/tests/       Python backend and ML pipeline unit tests (pytest)
+apps/web/            Vite 8 + React 19 + Tailwind CSS v4 SPA, UI primitives, canvas & review editors
+apps/desktop/        Ultra-thin Electron shell (main.ts / preload.ts / inno-updater.ts)
+scripts/             Dev runner, desktop packager, macOS signing & update feed scripts
+submodule/demucs/    Demucs source submodule
 ```
 
-Issues and pull requests are welcome for installation improvements, model adapters, subtitles and audio/video alignment, or independent source and workflow plugins. Historical designs remain in `docs/`; this README and the [Desktop development guide](apps/harness/docs/DEVELOPMENT.md) describe the current entry points.
+Issues and pull requests are welcome for installation improvements, model adapters, and subtitle or audio/video alignment. See [Web UI notes](apps/web/README.md) and [Desktop notes](apps/desktop/README.md) for module details.
 
 ## License
 

@@ -49,7 +49,7 @@ const progressMessages: Record<string, MessageKey> = {
 // Keep persisted provider messages and raw logs unchanged; localize their display.
 export function taskProgressMessage(message: string, tx: Text): string {
   if (progressMessages[message]) return tx(progressMessages[message])
-  const batch = /^(?:翻译|Translating batch) (\d+)\/(\d+)$/.exec(message)
+  const batch = /^(?:翻译|Translating batch|Translated) (\d+)\/(\d+)$/.exec(message)
   if (batch) return tx('task.progress.translation.batch', { current: batch[1], total: batch[2] })
   const adjusted = /^Adjusted (\d+)\/(\d+) speech clips$/.exec(message)
   if (adjusted) return tx('task.progress.mix.adjusted', { current: adjusted[1], total: adjusted[2] })

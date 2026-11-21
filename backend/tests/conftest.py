@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +16,25 @@ os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _ensure_working_ffmpeg() -> None:
+    if os.getenv("FFMPEG_PATH", "").strip():
+        return
+    try:
+        probe = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        if probe.returncode == 0:
+            return
+    except (OSError, subprocess.SubprocessError):
+        pass
+    fallback_dir = Path.home() / "Library" / "Application Support" / "YouDub" / "runtime" / "ffmpeg"
+    if (fallback_dir / "ffmpeg").is_file() and (fallback_dir / "ffprobe").is_file():
+        os.environ["FFMPEG_PATH"] = str(fallback_dir / "ffmpeg")
+        os.environ["FFPROBE_PATH"] = str(fallback_dir / "ffprobe")
+        os.environ["PATH"] = f"{fallback_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+_ensure_working_ffmpeg()
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +59,7 @@ def config():
 def cancelled_media_process(monkeypatch):
     import subprocess
     from backend.app.v1 import media
-    from backend.workers.protocol import WorkerError
+    from backend.app.v1.errors import OperationCancelledError
     real_popen = subprocess.Popen
     processes, checks = [], 0
 
@@ -52,7 +73,7 @@ def cancelled_media_process(monkeypatch):
         if processes and processes[0].poll() is None:
             checks += 1
             if checks == 2:
-                raise WorkerError("CANCELLED", "The host cancelled this invocation.")
+                raise OperationCancelledError("CANCELLED", "The host cancelled this invocation.")
 
     monkeypatch.setattr(media.subprocess, "Popen", slow_process)
     yield check_cancel

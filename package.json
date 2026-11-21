@@ -1,45 +1,34 @@
 {
   "name": "youdub-webui-fullstack",
-  "version": "0.0.13",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/sdk",
-    "packages/builtin"
+    "apps/web",
+    "apps/desktop"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "license": "Apache-2.0",
   "scripts": {
-    "build:desktop": "npm run build:youdub",
-    "test:downloads": "node --test scripts/download-releases.test.mjs",
-    "start": "npm --prefix apps/harness run desktop",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test packages/*/test/*.test.ts",
-    "dev:web": "npm --prefix apps/harness start",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "npm --prefix apps/web run dev",
+    "start": "npm --prefix apps/desktop run start",
+    "build": "npm --prefix apps/web run build && npm --prefix apps/desktop run build",
+    "test": "npm --prefix apps/web run test && npm run test:backend",
     "test:backend": "node scripts/test-backend.mjs",
-    "lint:web": "npm --prefix apps/web run lint",
-    "build:youdub": "npm --prefix apps/harness run build:product",
-    "check:harness": "npm --prefix apps/harness run check:composition",
-    "build:framework": "npm --prefix apps/harness run build:framework",
-    "dev": "npm --prefix apps/harness run desktop",
-    "package:desktop": "node apps/harness/package-desktop.mjs"
+    "test:downloads": "node --test scripts/download-releases.test.mjs",
+    "typecheck": "npm --prefix apps/web run typecheck && npm --prefix apps/desktop run typecheck",
+    "lint": "npm --prefix apps/web run lint",
+    "package:desktop": "node scripts/package-desktop.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "3.18.1",
-    "ajv": "8.17.1",
-    "busboy": "1.6.0",
-    "cordis": "4.0.0-rc.10",
-    "dotenv": "16.6.1",
-    "sentencex-wasm": "0.1.34",
-    "undici": "7.30.0"
+    "dotenv": "16.6.1"
   },
   "devDependencies": {
-    "@types/busboy": "1.5.4",
     "@types/node": "22.18.6",
     "esbuild": "0.25.10",
-    "tsx": "4.20.6",
     "typescript": "5.9.3"
   }
 }

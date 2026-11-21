@@ -15,8 +15,28 @@ const WorkflowRun = bindTestComponent(WorkflowRunView, ['request', 'navigate', '
 const WorkflowRerun = bindTestComponent(WorkflowRerunView, ['request', 'navigate', 'useQuery', 'useSlot', 'useWorkflowResources'])
 import { HttpError } from '@/runtime/http'
 import { WorkflowDiagnostics } from './builtin/workflow-errors'
-import { requestHarness } from '../../../harness/src/frontend/runtime'
-import { nodeDescriptors } from '../../../../packages/builtin/src/node-contracts'
+import { createApiRequest } from '@/lib/api'
+
+const downloadDescriptor: Omit<NodeTypeDefinition, 'providerId' | 'provider' | 'operation' | 'outputs'> = {
+  type: 'youdub.download',
+  version: '1',
+  label: '下载视频',
+  category: 'media',
+  inputs: [],
+  configSchema: {
+    type: 'object',
+    properties: {
+      proxyPort: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 65535,
+        default: 0,
+        'x-title': '本机 HTTP 代理端口（0 为直连）',
+      },
+    },
+  },
+  defaults: { proxyPort: 0 },
+}
 
 const runCallbacks = { revision: null, onStarted: () => {}, onLockChange: () => {} }
 
@@ -41,7 +61,7 @@ function graph(): WorkflowDocument {
 }
 const ready: ResourceState = { status: 'ready', requirements: [{ providerId: 'test', ready: true, automatic: true }] }
 const missing: ResourceState = { status: 'missing', requirements: [{ providerId: 'test', model: 'tiny', ready: false, automatic: true, reason: '模型文件尚未安装。' }] }
-const base = '/api/v2/workflow-documents/resources/'
+const base = '/api/workflow-documents/resources/'
 afterEach(() => { cleanup(); window.localStorage.clear(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 it('keeps workbench resource requirements collapsed and preserves visible failure causes', async () => {
@@ -87,7 +107,7 @@ it.each(['', 'application/octet-stream'])('submits an SRT selected with unspecif
   document.inputs = [{ ...document.inputs[0], label: '原文字幕', schemaId: 'application/x-subrip/v1', acceptedMimeTypes: ['application/x-subrip', 'text/plain'], maxBytes: 1024 }]
   const request = vi.fn(async (path: string, init?: RequestInit) => {
     if (path.includes('/validate')) return { valid: true, diagnostics: [] }
-    if (path === '/api/v2/tasks' && init?.method === 'POST') return { id: 'created' }
+    if (path === '/api/tasks' && init?.method === 'POST') return { id: 'created' }
     return ready
   })
   const { push } = mount(<WorkflowRun {...runCallbacks} document={document} types={types} />, request)
@@ -96,7 +116,7 @@ it.each(['', 'application/octet-stream'])('submits an SRT selected with unspecif
   await waitFor(() => expect(screen.getByRole('button', { name: '开始运行' })).toBeEnabled())
   await userEvent.setup().click(screen.getByRole('button', { name: '开始运行' }))
   await waitFor(() => expect(push).toHaveBeenCalledWith('/tasks/created'))
-  const body = request.mock.calls.find(([path]) => path === '/api/v2/tasks')![1]!.body as FormData
+  const body = request.mock.calls.find(([path]) => path === '/api/tasks')![1]!.body as FormData
   const uploaded = body.get('input.source') as File
   expect(uploaded.type).toBe('application/x-subrip')
   expect(uploaded.name).toBe('captions.SRT')
@@ -105,10 +125,10 @@ it.each(['', 'application/octet-stream'])('submits an SRT selected with unspecif
 })
 
 it('keeps the original link-above-upload layout and submits URL input through a download node', async () => {
-  const withDownload: NodeTypeDefinition[] = [...types, { ...nodeDescriptors.download, providerId: 'media', operation: 'download', provider: { id: 'media', operations: [] }, outputs: [{ name: 'video', kind: 'artifact', schemaId: 'video/mp4/v1', required: true }] }]
+  const withDownload: NodeTypeDefinition[] = [...types, { ...downloadDescriptor, providerId: 'media', operation: 'download', provider: { id: 'media', operations: [] }, outputs: [{ name: 'video', kind: 'artifact', schemaId: 'video/mp4/v1', required: true }] }]
   const request = vi.fn(async (path: string, init?: RequestInit) => {
     if (path.includes('/validate')) return { valid: true, diagnostics: [] }
-    if (path === '/api/v2/tasks' && init?.method === 'POST') return { id: 'created' }
+    if (path === '/api/tasks' && init?.method === 'POST') return { id: 'created' }
     return ready
   })
   const { push } = mount(<WorkflowRun {...runCallbacks} prominent document={graph()} types={withDownload} />, request)
@@ -128,7 +148,7 @@ it('keeps the original link-above-upload layout and submits URL input through a 
   await waitFor(() => expect(screen.getByRole('button', { name: '下载并处理' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '下载并处理' }))
   await waitFor(() => expect(push).toHaveBeenCalledWith('/tasks/created'))
-  const body = request.mock.calls.find(([path]) => path === '/api/v2/tasks')![1]!.body as FormData
+  const body = request.mock.calls.find(([path]) => path === '/api/tasks')![1]!.body as FormData
   const submitted = JSON.parse(String(body.get('request')))
   expect(body.has('input.source')).toBe(false)
   expect(submitted.graphDocument.inputs).toEqual([])
@@ -251,7 +271,7 @@ it('does not offer automatic downloads for a manual plugin requirement', async (
   expect(screen.queryByRole('button', { name: '准备所需资源' })).not.toBeInTheDocument()
 })
 it.each([
-  ['en', 'Preparing · Downloading'], ['ja', '準備中 · ダウンロード'],
+  ['en', 'Downloading'], ['ja', 'ダウンロード中'],
 ])('localizes preparation states in %s', async (language, expected) => {
   window.localStorage.setItem('youdub-ui-language', language)
   const request = vi.fn(async () => ({ ...missing, status: 'preparing', models: [{ id: 'tiny', name: 'Whisper tiny', status: 'downloading' }] }))
@@ -309,7 +329,7 @@ it('prepares dependencies before rerunning, names kept/recomputed nodes and pres
   const request = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === `${base}prepare`) { prepared = true; return ready }
     if (path === `${base}check`) return prepared ? ready : missing
-    if (path === '/api/v2/tasks/source') return { id: 'source', status: 'succeeded', attempt: 1, revision: 2, steps: [] }
+    if (path === '/api/tasks/source') return { id: 'source', status: 'succeeded', attempt: 1, revision: 2, steps: [] }
     if (path.endsWith('/rerun-preview')) return preview
     if (path.endsWith('/rerun')) throw new HttpError('Workflow validation failed.', 422, 'INVALID_GRAPH', [{ code: 'INVALID_GRAPH', nodeId: 'node-33ed', message: 'Export requires a video input.' }])
     if (init?.method === 'DELETE') return undefined
@@ -339,13 +359,13 @@ it('prepares dependencies before rerunning, names kept/recomputed nodes and pres
 it('preserves backend diagnostics in the API error instead of only the generic message', async () => {
   const details = [{ code: 'INVALID_GRAPH', nodeId: 'node-33ed', message: 'Required input is missing.' }]
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: { code: 'INVALID_GRAPH', message: 'Workflow validation failed.', details } }, { status: 422 })))
-  await expect(requestHarness('/api/v2/tasks/source/rerun-preview', { method: 'POST', body: '{}' })).rejects.toMatchObject({ status: 422, code: 'INVALID_GRAPH', details })
+  await expect(createApiRequest()('/api/tasks/source/rerun-preview', { method: 'POST', body: '{}' })).rejects.toMatchObject({ status: 422, code: 'INVALID_GRAPH', details })
 })
 
 it('keeps the resource request stable through Desktop bindings and unrelated graph edits', async () => {
   const fetch = vi.fn(async () => Response.json(ready))
   vi.stubGlobal('fetch', fetch)
-  const context: TestContext = { apiClient: { request: requestHarness } }
+  const context: TestContext = { apiClient: { request: createApiRequest() } }
   const document = graph()
   const wrap = (document: WorkflowDocument) => <TestFeatureProvider context={context}><LanguageProvider><Resources document={document} /></LanguageProvider></TestFeatureProvider>
   const view = render(wrap(document))
@@ -368,7 +388,7 @@ it('unlocks after validation fails before upload and identifies the affected nod
   await screen.findByText('识别字幕: Select a model.')
   expect(onLockChange).toHaveBeenLastCalledWith(false)
   expect(input).toBeEnabled()
-  expect(request.mock.calls.some(([path]) => path === '/api/v2/tasks')).toBe(false)
+  expect(request.mock.calls.some(([path]) => path === '/api/tasks')).toBe(false)
   expect(screen.queryByRole('button', { name: '查询创建结果' })).not.toBeInTheDocument()
 })
 

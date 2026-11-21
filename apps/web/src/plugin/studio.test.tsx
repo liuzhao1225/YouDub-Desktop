@@ -3,33 +3,113 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
-import { type Catalog, type NodeTypeDefinition, type TaskView, type WorkflowDocument } from './sdk'
-import { StudioPage as Page } from '../../../harness/src/frontend/studio-page'
-import reviewedSubtitles from '../../../../packages/builtin/src/workflow-templates/reviewed-subtitles.json'
-import { nodeDescriptors } from '../../../../packages/builtin/src/node-contracts'
+import { type NodeTypeDefinition, type TaskView, type WorkflowDocument } from './sdk'
+import { Studio } from './builtin/studio'
+import { bindTestComponent } from './test-bindings'
 
-const catalog: Catalog = { providers: [], workflows: [{ id: 'external.text', version: '2.0.0', label: 'Text workflow', inputs: [{ name: 'document', label: 'Document', acceptedMimeTypes: ['text/plain'], required: true }], configSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['upper', 'lower'] } }, required: ['mode'] }, defaults: { mode: 'upper' } }] }
+const Page = bindTestComponent(Studio, ['draftStore', 'request', 'navigate', 'useQuery', 'useSlot', 'useWorkflowDocuments', 'useWorkflowResources'])
+
+const baseDefinitions: NodeTypeDefinition[] = [
+  {
+    type: 'youdub.transcribe',
+    version: '1.0.0',
+    providerId: 'whisper',
+    operation: 'transcribe',
+    provider: { id: 'whisper', operations: [] },
+    label: '识别',
+    category: 'text',
+    inputs: [],
+    outputs: [],
+    defaults: {},
+    configSchema: {
+      type: 'object',
+      properties: {
+        sourceLanguage: { type: 'string', enum: ['auto', 'en', 'ja'], 'x-title': '原文语言' },
+        initialPrompt: { type: 'string', 'x-title': '识别提示词' },
+      },
+    },
+    ui: { quickFields: ['sourceLanguage'] },
+  },
+]
+
+const downloadDefinition: NodeTypeDefinition = {
+  type: 'youdub.download',
+  version: '1',
+  label: '下载视频',
+  category: 'media',
+  providerId: 'youdub.download',
+  provider: { id: 'youdub.download', operations: [] },
+  operation: 'download',
+  inputs: [],
+  outputs: [{ name: 'video', kind: 'artifact', schemaId: 'video/mp4/v1', required: true }],
+  configSchema: {
+    type: 'object',
+    properties: {
+      proxyPort: { type: 'integer', minimum: 0, maximum: 65535, default: 0, 'x-title': '本机 HTTP 代理端口（0 为直连）' },
+    },
+  },
+  defaults: { proxyPort: 0 },
+}
+
+function makeWorkflow(id = 'youdub.subtitles', title = '字幕翻译', inputId = 'video'): WorkflowDocument {
+  return {
+    format: 'youdub.workflow',
+    formatVersion: 1,
+    id,
+    title,
+    inputs: [{ id: inputId, label: '视频', kind: 'artifact', schemaId: 'file/v1', required: true, acceptedMimeTypes: ['video/*'] }],
+    outputs: [],
+    nodes: [
+      { id: 'recognize', label: '第一段识别', type: 'youdub.transcribe', typeVersion: '1.0.0', provider: { id: 'whisper' }, config: { sourceLanguage: 'auto', initialPrompt: 'preserved' }, autoContinue: false },
+      { id: 'recognize-second', label: '第二段识别', type: 'youdub.transcribe', typeVersion: '1.0.0', provider: { id: 'whisper' }, config: { sourceLanguage: 'en', initialPrompt: 'second' }, autoContinue: false },
+    ],
+    edges: [],
+    presentation: { positions: {}, viewport: { x: 0, y: 0, zoom: 1 } },
+  }
+}
+
+function createContext(request: (path: string, init?: RequestInit) => Promise<unknown>, push = vi.fn()): TestContext {
+  const defaultDoc = makeWorkflow()
+  const context = {
+    apiClient: {
+      request: async (path: string, init?: RequestInit) => {
+        if (path.startsWith('/api/workflow-documents?')) {
+          return { items: [{ id: defaultDoc.id, revision: 0, origin: 'builtin', document: defaultDoc }] }
+        }
+        if (path === '/api/node-types') return { items: baseDefinitions }
+        if (path.includes('/resources/check')) return { status: 'ready', requirements: [] }
+        if (path.includes('/validate')) return { valid: true, diagnostics: [] }
+        return request(path, init)
+      },
+    },
+    navigation: { push },
+  } as TestContext
+  testHost(context)
+  return context
+}
+
+function mount(request: (path: string, init?: RequestInit) => Promise<unknown>, direct = false) {
+  const push = vi.fn()
+  const context = direct ? ({ apiClient: { request }, navigation: { push } } as TestContext) : createContext(request, push)
+  render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
+  return push
+}
+
 afterEach(() => { cleanup(); window.localStorage.clear() })
 
 it('keeps dropped media across workflows and edits only each node’s declared basic settings for this run', async () => {
-  const template = structuredClone(reviewedSubtitles) as WorkflowDocument
-  template.nodes = [
-    { ...template.nodes[1], label: '第一段识别', config: { sourceLanguage: 'auto', initialPrompt: 'preserved' } },
-    { ...template.nodes[1], id: 'recognize-second', label: '第二段识别', config: { sourceLanguage: 'en', initialPrompt: 'second' } },
-  ]
-  const another = { ...structuredClone(template), id: 'another', title: '另一个工作流', inputs: [{ ...template.inputs[0], id: 'renamed-video' }] }
-  const definitions: NodeTypeDefinition[] = [{ type: 'youdub.transcribe', version: '1.0.0', providerId: 'whisper', operation: 'transcribe', provider: { id: 'whisper', operations: [] }, label: '识别', category: 'text', inputs: [], outputs: [], defaults: {}, configSchema: { type: 'object', properties: { sourceLanguage: { type: 'string', enum: ['auto', 'en', 'ja'], 'x-title': '原文语言' }, initialPrompt: { type: 'string', 'x-title': '识别提示词' } } }, ui: { quickFields: ['sourceLanguage'] } }]
+  const template = makeWorkflow()
+  const another = makeWorkflow('another', '另一个工作流', 'renamed-video')
   const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return { providers: [], workflows: [{ ...catalog.workflows[0], id: 'youdub.graph' }, { ...catalog.workflows[0], id: 'youdub.localize', label: '旧视频流程' }, { ...catalog.workflows[0], id: 'external.graph', label: template.title, graphTemplate: template }, catalog.workflows[0]] }
-    if (path.startsWith('/api/v2/workflow-documents?')) return { items: [template, another].map((document) => ({ id: document.id, revision: 1, origin: 'builtin', document })) }
-    if (path === '/api/v2/node-types') return { items: definitions }
+    if (path.startsWith('/api/workflow-documents?')) return { items: [template, another].map((document) => ({ id: document.id, revision: 1, origin: 'builtin', document })) }
+    if (path === '/api/node-types') return { items: baseDefinitions }
     if (path.includes('/resources/check')) return { status: 'ready', requirements: [] }
     if (path.includes('/validate')) return { valid: true, diagnostics: [] }
-    if (path.startsWith('/api/v2/tasks?')) return { items: [] }
-    if (path === '/api/v2/tasks' && init?.method === 'POST') throw new Error('Connection interrupted')
+    if (path.startsWith('/api/tasks?')) return { items: [] }
+    if (path === '/api/tasks' && init?.method === 'POST') throw new Error('Connection interrupted')
     throw new Error(`Unexpected request ${path}`)
   })
-  mount(request, false)
+  mount(request, true)
   await screen.findByText('拖入视频，或点击选择文件')
   expect(screen.getByRole('heading', { name: '让视频说另一种语言' })).toBeInTheDocument()
   expect(screen.queryByText('处理流程')).not.toBeInTheDocument()
@@ -37,7 +117,7 @@ it('keeps dropped media across workflows and edits only each node’s declared b
   const user = userEvent.setup()
   await user.click(screen.getByLabelText('工作流'))
   expect(screen.queryByRole('menuitem', { name: '旧视频流程' })).not.toBeInTheDocument()
-  expect(await screen.findByRole('menuitem', { name: 'Text workflow' })).toBeInTheDocument()
+  expect(screen.queryByRole('menuitem', { name: 'Text workflow' })).not.toBeInTheDocument()
   expect(screen.getAllByRole('menuitem', { name: template.title })).toHaveLength(1)
   await user.keyboard('{Escape}')
   expect(screen.queryByLabelText('识别提示词')).not.toBeInTheDocument()
@@ -56,7 +136,7 @@ it('keeps dropped media across workflows and edits only each node’s declared b
   await waitFor(() => expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '开始处理' }))
   await screen.findByText('Connection interrupted')
-  const body = request.mock.calls.find(([path, init]) => path === '/api/v2/tasks' && init?.method === 'POST')![1]!.body as FormData
+  const body = request.mock.calls.find(([path, init]) => path === '/api/tasks' && init?.method === 'POST')![1]!.body as FormData
   const submitted = JSON.parse(String(body.get('request')))
   expect(submitted).toMatchObject({ workflowId: 'youdub.graph', documentRevision: null })
   expect(submitted.graphDocument.nodes[0].config).toEqual({ sourceLanguage: 'ja', initialPrompt: 'preserved' })
@@ -69,137 +149,78 @@ it('keeps dropped media across workflows and edits only each node’s declared b
 
 it('submits declared input slots and preserves an uncertain creation ID until explicitly cleared', async () => {
   const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return catalog
-    if (path.startsWith('/api/v2/tasks?')) return { items: [], hasMore: false, limit: 12, offset: 0 }
+    if (path.startsWith('/api/tasks?')) return { items: [], hasMore: false, limit: 12, offset: 0 }
     if (init?.method === 'DELETE') return undefined
     throw new Error('Connection interrupted')
   })
-  const context = externalContext(request)
+  const context = createContext(request)
   render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
-  const input = await screen.findByLabelText('Document *')
+  const input = await screen.findByLabelText('视频 *')
   expect(screen.getByRole('link', { name: '查看官网示例' })).toHaveAttribute('href', 'https://liuzhao1225.github.io/YouDub-webui/#demo')
   const user = userEvent.setup()
-  await user.upload(input, new File(['hello'], 'input.txt', { type: 'text/plain' }))
+  await user.upload(input, new File(['video'], 'input.mp4', { type: 'video/mp4' }))
   expect((input as HTMLInputElement).files).toHaveLength(1)
-  expect(screen.queryByLabelText('处理流程')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: '开始处理' })).toHaveAttribute('type', 'submit')
-  // jsdom does not connect user-event's FileList to native file validity.
-  fireEvent.submit(input.closest('form')!)
+  await waitFor(() => expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '开始处理' }))
   await screen.findByText('Connection interrupted')
-  const first = request.mock.calls.find(([, init]) => init?.method === 'POST')![1]!.body as FormData
+  const first = request.mock.calls.find(([path, init]) => path === '/api/tasks' && init?.method === 'POST')![1]!.body as FormData
   const firstRequest = JSON.parse(first.get('request') as string)
-  expect(firstRequest).toMatchObject({ workflowId: 'external.text', workflowVersion: '2.0.0', config: { mode: 'upper' } })
-  expect((first.get('input.document') as File).name).toBe('input.txt')
-  expect(first.has('file')).toBe(false)
+  expect(firstRequest).toMatchObject({ workflowId: 'youdub.graph', config: {} })
+  expect((first.get('input.video') as File).name).toBe('input.mp4')
   expect(input).toBeDisabled()
-  fireEvent.submit(input.closest('form')!)
-  await waitFor(() => expect(request.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2))
-  const repeated = request.mock.calls.filter(([, init]) => init?.method === 'POST')[1][1]!.body as FormData
-  expect(JSON.parse(repeated.get('request') as string).id).toBe(firstRequest.id)
-  await user.click(screen.getByRole('button', { name: '清理本次导入' }))
+  await user.click(screen.getByRole('button', { name: '查询创建结果' }))
+  await waitFor(() => expect(request).toHaveBeenCalledWith(`/api/tasks/${firstRequest.id}`, undefined))
+  expect(input).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: '放弃本次提交并修改' }))
   await waitFor(() => expect(input).toBeEnabled())
-  expect(request).toHaveBeenCalledWith(`/api/v2/imports/${firstRequest.id}`, { method: 'DELETE' })
+  expect(request).toHaveBeenCalledWith(`/api/imports/${firstRequest.id}`, { method: 'DELETE' })
 })
 
 it('locks workflow selection while a submitted import still needs reconciliation', async () => {
-  const multiple = { ...catalog, workflows: [...catalog.workflows, { ...catalog.workflows[0], id: 'another', label: 'Another workflow' }] }
+  const firstDoc = makeWorkflow('first', '第一个工作流')
+  const secondDoc = makeWorkflow('second', '另一个工作流', 'other-video')
   const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return multiple
-    if (path.startsWith('/api/v2/tasks?')) return { items: [], hasMore: false, limit: 12, offset: 0 }
+    if (path.startsWith('/api/workflow-documents?')) return { items: [firstDoc, secondDoc].map((document) => ({ id: document.id, revision: 1, origin: 'builtin', document })) }
+    if (path === '/api/node-types') return { items: baseDefinitions }
+    if (path.includes('/resources/check')) return { status: 'ready', requirements: [] }
+    if (path.includes('/validate')) return { valid: true, diagnostics: [] }
+    if (path.startsWith('/api/tasks?')) return { items: [], hasMore: false, limit: 12, offset: 0 }
     if (init?.method === 'DELETE') return undefined
     throw new Error('Connection interrupted')
   })
-  const context = externalContext(request)
-  render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
-  const input = await screen.findByLabelText('Document *')
+  mount(request, true)
+  const input = await screen.findByLabelText('视频 *')
   const user = userEvent.setup()
-  await user.upload(input, new File(['hello'], 'input.txt', { type: 'text/plain' }))
-  fireEvent.submit(input.closest('form')!)
+  await user.upload(input, new File(['video'], 'input.mp4', { type: 'video/mp4' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '开始处理' }))
   await screen.findByText('Connection interrupted')
   expect(screen.getByLabelText('工作流')).toBeDisabled()
-  await user.click(screen.getByRole('button', { name: '清理本次导入' }))
-  await waitFor(() => expect(screen.getByLabelText('工作流')).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '放弃本次提交并修改' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '工作流' })).toBeEnabled())
   await user.click(screen.getByLabelText('工作流'))
-  await user.click(screen.getByRole('menuitem', { name: 'Another workflow' }))
-  expect(screen.getByLabelText('Document *')).toHaveValue('')
+  await user.click(screen.getByRole('menuitem', { name: '另一个工作流' }))
+  expect(screen.getByLabelText('工作流')).toHaveTextContent('另一个工作流')
 })
-
-it('retains each external composer draft after visiting settings and clears only the submitted draft', async () => {
-  const media = { ...catalog.workflows[0], id: 'external.media', label: 'Media workflow', ui: { sourceUrlInput: 'video' }, inputs: [
-    ...catalog.workflows[0].inputs,
-    { name: 'video', label: '视频', acceptedMimeTypes: ['video/*'], required: false },
-  ] }
-  const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return { ...catalog, workflows: [...catalog.workflows, media] }
-    if (path === '/api/v2/tasks' && init?.method === 'POST') return { id: 'created' }
-    return { items: [], hasMore: false }
-  })
-  const push = vi.fn()
-  const context = externalContext(request, push)
-  const showStudio = () => render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
-  let view = showStudio()
-  const user = userEvent.setup()
-  await user.upload(await screen.findByLabelText('Document *'), new File(['text draft'], 'text.txt', { type: 'text/plain' }))
-  await user.click(screen.getByLabelText('工作流'))
-  await user.click(screen.getByRole('menuitem', { name: 'Media workflow' }))
-  const file = new File(['media notes'], 'notes.txt', { type: 'text/plain' })
-  await user.upload(screen.getByLabelText('Document *'), file)
-  await user.type(screen.getByLabelText('视频链接'), 'https://youtu.be/jNQXAC9IVRw')
-  await user.click(screen.getByLabelText('mode *'))
-  await user.click(screen.getByRole('menuitem', { name: 'lower' }))
-
-  view.unmount() // The settings route unmounts the studio, while its plugin remains active.
-  view = showStudio()
-  await screen.findByText('notes.txt')
-  expect(screen.getByLabelText('工作流')).toHaveTextContent('Media workflow')
-  expect(screen.getByLabelText('视频链接')).toHaveValue('https://youtu.be/jNQXAC9IVRw')
-  expect(screen.getByLabelText('mode *')).toHaveTextContent('lower')
-  fireEvent.submit(screen.getByLabelText('视频链接').closest('form')!)
-  await waitFor(() => expect(push).toHaveBeenCalledWith('/tasks/created'))
-  const body = request.mock.calls.find(([path, init]) => path === '/api/v2/tasks' && init?.method === 'POST')![1]!.body as FormData
-  expect(body.get('input.document')).toBe(file)
-  expect(JSON.parse(String(body.get('request')))).toMatchObject({ workflowId: media.id, config: { mode: 'lower', source_url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw' } })
-
-  view.unmount()
-  showStudio()
-  await screen.findByLabelText('视频链接')
-  expect(screen.queryByText('notes.txt')).not.toBeInTheDocument()
-  expect(screen.getByLabelText('视频链接')).toHaveValue('')
-  expect(screen.getByLabelText('mode *')).toHaveTextContent('upper')
-  await user.click(screen.getByLabelText('工作流'))
-  await user.click(screen.getByRole('menuitem', { name: 'Text workflow' }))
-  expect(screen.getByText('text.txt')).toBeInTheDocument()
-})
-
-// The Host always registers Graph before exposing the catalog. External workflows
-// run inside GraphStudio, with their persisted selection owned by the same draft store.
-function externalContext(request: (path: string, init?: RequestInit) => Promise<unknown>, push = vi.fn()): TestContext {
-  const context = { apiClient: { request: async (path: string, init?: RequestInit) => {
-    if (path.startsWith('/api/v2/workflow-documents?')) return { items: [{ id: reviewedSubtitles.id, revision: 0, origin: 'builtin', document: reviewedSubtitles }] }
-    if (path === '/api/v2/node-types') return { items: [] }
-    if (path === '/api/v2/catalog') {
-      const result = await request(path, init) as Catalog
-      return { ...result, workflows: [{ ...catalog.workflows[0], id: 'youdub.graph' }, ...result.workflows] }
-    }
-    return request(path, init)
-  } }, navigation: { push } } as TestContext
-  testHost(context).value.draftStore.set('selected', 'workflow:external.text')
-  return context
-}
-
-function mount(request: (path: string, init?: RequestInit) => Promise<unknown>, external = true) {
-  const push = vi.fn()
-  const context = external ? externalContext(request, push) : { apiClient: { request }, navigation: { push } } as TestContext
-  render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
-  return push
-}
 
 it('counts review nodes even while their independent branch is running', async () => {
-  const active: TaskView = { id: 'review', status: 'running', attempt: 1, sourceName: 'review.mp4', createdAt: '2026-10-09T01:00:00Z', workflowId: 'youdub.graph', workflowVersion: '1', config: {}, outputs: [], allowedActions: [], steps: [
-    { id: 'translate', label: '翻译', status: 'awaiting_review', progress: 1 },
-    { id: 'audio', label: '生成配音', status: 'running', progress: 0.5 },
-  ] }
-  mount(vi.fn(async (path: string) => path === '/api/v2/catalog' ? catalog : { items: [active], hasMore: false }))
+  const active: TaskView = {
+    id: 'review',
+    status: 'running',
+    attempt: 1,
+    sourceName: 'review.mp4',
+    createdAt: '2026-10-09T01:00:00Z',
+    workflowId: 'youdub.graph',
+    workflowVersion: '1',
+    config: {},
+    outputs: [],
+    allowedActions: [],
+    steps: [
+      { id: 'translate', label: '翻译', status: 'awaiting_review', progress: 1 },
+      { id: 'audio', label: '生成配音', status: 'running', progress: 0.5 },
+    ],
+  }
+  mount(vi.fn(async () => ({ items: [active], hasMore: false })))
   const review = await screen.findByRole('link', { name: '1 个节点待确认' })
   expect(review).toHaveAttribute('href', '/tasks/review/nodes/translate')
   expect(screen.getByRole('link', { name: '1 个任务正在处理' })).toBeInTheDocument()
@@ -207,31 +228,41 @@ it('counts review nodes even while their independent branch is running', async (
 })
 
 it('shows the selected file and clears it before allowing a fresh selection', async () => {
-  mount(vi.fn(async (path: string) => path === '/api/v2/catalog' ? catalog : { items: [], hasMore: false, limit: 12, offset: 0 }))
+  mount(vi.fn(async () => ({ items: [], hasMore: false, limit: 12, offset: 0 })))
   const user = userEvent.setup()
-  const input = await screen.findByLabelText('Document *')
+  const input = await screen.findByLabelText('视频 *')
   expect(screen.getByRole('button', { name: '开始处理' })).toBeDisabled()
-  await user.upload(input, new File(['hello'], 'first.txt', { type: 'text/plain' }))
-  expect(screen.getByText('first.txt')).toBeInTheDocument()
+  await user.upload(input, new File(['hello'], 'first.mp4', { type: 'video/mp4' }))
+  expect(screen.getByText('first.mp4')).toBeInTheDocument()
   expect(screen.getByText(/5 B/)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled()
-  await user.click(screen.getByRole('button', { name: '移除 first.txt' }))
-  expect(screen.queryByText('first.txt')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '移除 first.mp4' }))
+  expect(screen.queryByText('first.mp4')).not.toBeInTheDocument()
   expect(input).toHaveValue('')
   expect(screen.getByRole('button', { name: '开始处理' })).toBeDisabled()
-  await user.upload(input, new File(['again'], 'second.txt', { type: 'text/plain' }))
-  expect(screen.getByText('second.txt')).toBeInTheDocument()
+  await user.upload(input, new File(['again'], 'second.mp4', { type: 'video/mp4' }))
+  expect(screen.getByText('second.mp4')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled()
 })
 
 it('keeps active tasks separate from recent results and links to their detail pages', async () => {
   const task = (id: string, status: TaskView['status']): TaskView => ({
-    id, status, attempt: 1, sourceName: `${id}.mp4`, createdAt: '2026-10-09T01:00:00Z',
-    workflowId: 'external.text', workflowVersion: '2.0.0', config: {}, steps: [], outputs: [], allowedActions: [], cover: { url: `/cover/${id}.jpg` },
+    id,
+    status,
+    attempt: 1,
+    sourceName: `${id}.mp4`,
+    createdAt: '2026-10-09T01:00:00Z',
+    workflowId: 'youdub.graph',
+    workflowVersion: '1.0.0',
+    config: {},
+    steps: [],
+    outputs: [],
+    allowedActions: [],
+    cover: { url: `/cover/${id}.jpg` },
   })
   const items = [task('running', 'running'), task('completed', 'succeeded'), task('failed', 'failed'), task('cancelling', 'cancelling')]
   items[0].steps = [{ id: 'synthesize', label: '生成配音', status: 'running', progress: null }, { id: 'export', label: '导出', status: 'pending', progress: null }]
-  const push = mount(vi.fn(async (path: string) => path === '/api/v2/catalog' ? catalog : { items, hasMore: false, limit: 12, offset: 0 }))
+  const push = mount(vi.fn(async () => ({ items, hasMore: false, limit: 12, offset: 0 })))
   const active = await screen.findByRole('region', { name: '进行中' })
   const recent = screen.getByRole('region', { name: '最近任务' })
   expect(active).toHaveTextContent('running.mp4')
@@ -250,16 +281,19 @@ it('keeps active tasks separate from recent results and links to their detail pa
 })
 
 it('places the link first, switches between sources and submits a canonical URL without a file', async () => {
-  const linked: Catalog = { providers: [], workflows: [{ ...catalog.workflows[0], ui: { sourceUrlInput: 'video' }, inputs: [{ name: 'video', label: '视频', acceptedMimeTypes: ['video/*'], required: false }], configSchema: { type: 'object', properties: { source_url: { type: 'string' }, source_proxy_port: nodeDescriptors.download.configSchema.properties!.proxyPort } }, defaults: {} }] }
+  const doc = makeWorkflow()
   const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return linked
+    if (path.startsWith('/api/workflow-documents?')) return { items: [{ id: doc.id, revision: 1, origin: 'builtin', document: doc }] }
+    if (path === '/api/node-types') return { items: [...baseDefinitions, downloadDefinition] }
+    if (path.includes('/resources/check')) return { status: 'ready', requirements: [] }
+    if (path.includes('/validate')) return { valid: true, diagnostics: [] }
     if (init?.method === 'POST') return { id: 'download' }
     return { items: [], hasMore: false, limit: 12, offset: 0 }
   })
-  const push = mount(request)
+  const push = mount(request, true)
   const user = userEvent.setup()
   const link = await screen.findByLabelText('视频链接')
-  const file = screen.getByLabelText('视频') as HTMLInputElement
+  const file = screen.getByLabelText('视频 *') as HTMLInputElement
   expect(link.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(screen.getByRole('button', { name: '开始处理' })).toBeDisabled()
   await user.upload(file, new File(['video'], 'clip.mp4', { type: 'video/mp4' }))
@@ -271,42 +305,43 @@ it('places the link first, switches between sources and submits a canonical URL 
   await user.type(link, 'http://127.0.0.1/secret')
   await user.tab()
   expect(screen.getByRole('button', { name: '开始处理' })).toBeDisabled()
-  expect(screen.getByText('请输入 YouTube 或 B 站的单个视频链接。')).toBeInTheDocument()
+  expect(screen.getByText('仅支持 YouTube 和 Bilibili 视频链接')).toBeInTheDocument()
   await user.clear(link)
   await user.type(link, 'https://youtu.be/jNQXAC9IVRw')
-  const proxy = screen.getAllByRole('spinbutton', { name: '本机 HTTP 代理端口（0 为直连）' })[0]
+  const proxy = screen.getByRole('spinbutton', { name: '本机 HTTP 代理端口（0 为直连）' })
   fireEvent.change(proxy, { target: { value: '7897' } })
   await user.click(screen.getByRole('button', { name: '下载并处理' }))
   await waitFor(() => expect(push).toHaveBeenCalledWith('/tasks/download'))
-  const body = request.mock.calls.find(([, init]) => init?.method === 'POST')![1]!.body as FormData
-  expect(JSON.parse(body.get('request') as string).config.source_url).toBe('https://www.youtube.com/watch?v=jNQXAC9IVRw')
-  expect(JSON.parse(body.get('request') as string).config.source_proxy_port).toBe(7897)
+  const body = request.mock.calls.find(([path, init]) => path === '/api/tasks' && init?.method === 'POST')![1]!.body as FormData
+  const submitted = JSON.parse(body.get('request') as string)
+  expect(submitted.nodeRuntimeInputs['source-download']).toEqual({ url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw' })
+  expect(submitted.graphDocument.nodes[0].config.proxyPort).toBe(7897)
   expect(body.has('input.video')).toBe(false)
 })
 
 it('retains a submission across a route unmount and does not navigate from its late response', async () => {
   let finish!: (task: { id: string }) => void
   const request = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path === '/api/v2/catalog') return catalog
-    if (path.startsWith('/api/v2/tasks?')) return { items: [] }
-    if (path === '/api/v2/tasks' && init?.method === 'POST') return new Promise<{ id: string }>(resolve => { finish = resolve })
+    if (path.startsWith('/api/tasks?')) return { items: [] }
+    if (path === '/api/tasks' && init?.method === 'POST') return new Promise<{ id: string }>(resolve => { finish = resolve })
     throw new Error('Unexpected request ' + path)
   })
   const push = vi.fn()
-  const context = externalContext(request, push)
+  const context = createContext(request, push)
   const show = () => render(<TestFeatureProvider context={context}><LanguageProvider><Page /></LanguageProvider></TestFeatureProvider>)
   const first = show(), user = userEvent.setup()
-  const input = await screen.findByLabelText('Document *')
-  await user.upload(input, new File(['data'], 'pending.txt', { type: 'text/plain' }))
-  fireEvent.submit(input.closest('form')!)
+  const input = await screen.findByLabelText('视频 *')
+  await user.upload(input, new File(['data'], 'pending.mp4', { type: 'video/mp4' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '开始处理' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '开始处理' }))
   await waitFor(() => expect(finish).toBeDefined())
   first.unmount()
   await act(async () => finish({ id: 'created-while-away' }))
   expect(push).not.toHaveBeenCalled()
   show()
-  expect(await screen.findByText('pending.txt')).toBeInTheDocument()
-  expect(screen.getByLabelText('Document *')).toBeDisabled()
+  expect(await screen.findByText('pending.mp4')).toBeInTheDocument()
+  expect(screen.getByLabelText('视频 *')).toBeDisabled()
   await user.click(screen.getByRole('button', { name: '查询创建结果' }))
   expect(push).toHaveBeenCalledWith('/tasks/created-while-away')
-  expect(request.mock.calls.filter(([path, init]) => path === '/api/v2/tasks' && init?.method === 'POST')).toHaveLength(1)
+  expect(request.mock.calls.filter(([path, init]) => path === '/api/tasks' && init?.method === 'POST')).toHaveLength(1)
 })

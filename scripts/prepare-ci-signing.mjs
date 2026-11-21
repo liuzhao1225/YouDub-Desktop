@@ -1,7 +1,8 @@
 import { mkdir, writeFile, link } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'liuzhao1225/YouDub-webui' || process.env.GITHUB_REF_TYPE !== 'tag') {
+const allowedRepos = new Set(['liuzhao1225/YouDub-Desktop', 'liuzhao1225/YouDub-webui'])
+if (process.env.GITHUB_ACTIONS !== 'true' || !allowedRepos.has(process.env.GITHUB_REPOSITORY || '') || process.env.GITHUB_REF_TYPE !== 'tag') {
   throw new Error('CI signing material is restricted to this repository tag workflow.')
 }
 const directory = resolve(process.env.YOUDUB_APPLE_CREDENTIALS_DIR || '')

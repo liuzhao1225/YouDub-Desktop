@@ -1,0 +1,25 @@
+{
+  "name": "@youdub/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "YouDub video localization desktop",
+  "author": "YouDub contributors",
+  "license": "Apache-2.0",
+  "main": "dist/main.js",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/main.js --external:electron --external:electron-updater && esbuild src/preload.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/preload.cjs --external:electron",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@electron/osx-sign": "2.3.0",
+    "@types/node": "26.6.5",
+    "electron": "44.7.0",
+    "electron-builder": "26.17.0",
+    "esbuild": "0.25.10",
+    "typescript": "5.9.3"
+  }
+}

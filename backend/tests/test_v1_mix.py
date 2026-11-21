@@ -13,9 +13,8 @@ from backend.app.config import ffmpeg_binary
 from backend.app.v1 import media, mix
 from backend.app.v1.audio_segments import Alignment, SpeechClip, SpeechClips
 from backend.app.v1.contracts import TaskConfig
-from backend.app.v1.errors import ApiError
+from backend.app.v1.errors import ApiError, OperationCancelledError
 from backend.app.v1.steps import StageContext
-from backend.workers.protocol import WorkerError
 
 
 def write_tone(path: Path, duration_ms: int, frequency: int, *, rate: int = 22050):
@@ -214,7 +213,7 @@ def test_missing_background_is_not_replaced_by_original_audio(context):
 
 
 def test_cancelling_mix_reaps_ffmpeg_before_returning(context, cancelled_media_process):
-    with pytest.raises(WorkerError, match="The host cancelled this invocation") as error:
+    with pytest.raises(OperationCancelledError, match="The host cancelled this invocation") as error:
         mix.run(replace(context, check_cancel=cancelled_media_process), lambda value, message: None)
     assert error.value.code == "CANCELLED"
     assert not (context.work_dir / "mixed.wav").exists()

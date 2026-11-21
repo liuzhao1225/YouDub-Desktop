@@ -45,6 +45,8 @@ Source: "{#RepoRoot}\dist\win-unpacked\*"; DestDir: "{app}"; Flags: ignoreversio
 ; live in YouDub's separate data directory and are never installer payloads.
 Type: filesandordirs; Name: "{app}\resources\app"
 Type: filesandordirs; Name: "{app}\resources\youdub"
+Type: filesandordirs; Name: "{app}\resources\backend"
+Type: filesandordirs; Name: "{app}\resources\web-dist"
 
 [Icons]
 Name: "{group}\YouDub"; Filename: "{app}\YouDub.exe"; AppUserModelID: "com.youdub.desktop"

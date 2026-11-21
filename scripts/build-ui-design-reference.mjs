@@ -1,16 +1,17 @@
-/** Rebuild the reference from checked-in Harness CSS and the YouDub palette. */
+/** Rebuild the reference from checked-in UI primitive CSS and the YouDub palette. */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = path => readFile(resolve(root, path), 'utf8');
-const upstream = 'vendor/deepseek-harness/source/packages/client/';
+const primitivesDir = 'apps/web/src/components/ui/primitives/';
+const stylesDir = 'apps/web/src/styles/';
 const primitives = ['Button','Input','InlineEditor','Switch','Checkbox','Tag','SegmentedControl','Menu','MenuSurface','Tooltip','Modal'];
-const css = await Promise.all(primitives.map(async name => (await read(`${upstream}ui-primitives/src/${name}.module.css`)).replace(/\.([a-zA-Z_][\w-]*)/g, (_, cls) => `.${name}_${cls}`)));
-const base = await read(`${upstream}ui-theme/src/styles/base.css`);
-const corners = await read(`${upstream}ui-theme/src/styles/corner-shape.css`);
-const elevation = await read(`${upstream}ui-theme/src/styles/gradient-shadow-text.css`);
-const palette = await read(`${upstream}ui-theme/src/styles/design-platform.css`) + '\n' + await read('apps/web/src/app/harness-palette.css');
+const css = await Promise.all(primitives.map(async name => (await read(`${primitivesDir}${name}.module.css`)).replace(/\.([a-zA-Z_][\w-]*)/g, (_, cls) => `.${name}_${cls}`)));
+const base = await read(`${stylesDir}base.css`);
+const corners = await read(`${stylesDir}corner-shape.css`);
+const elevation = await read(`${stylesDir}gradient-shadow-text.css`);
+const palette = await read(`${stylesDir}design-platform.css`) + '\n' + await read('apps/web/src/app/harness-palette.css');
 const escape = s => s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 const inline = s => escape(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2">$1</a>');
 const source = await read('docs/design/harness-visual-spec.md');

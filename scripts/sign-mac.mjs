@@ -1,7 +1,7 @@
 import { parse } from 'dotenv'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-const signingRequire = createRequire(new URL('../apps/harness/package.json', import.meta.url))
+const signingRequire = createRequire(new URL('../apps/desktop/package.json', import.meta.url))
 const { sign: signElectron } = await import(pathToFileURL(signingRequire.resolve('@electron/osx-sign')))
 import { readFile, mkdir, rm, symlink, stat } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'

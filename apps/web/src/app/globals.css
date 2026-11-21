@@ -1,10 +1,11 @@
 @import "tailwindcss";
-@import "../../../../vendor/deepseek-harness/source/packages/client/ui-theme/src/styles/design-platform.css";
+@import "../styles/design-platform.css";
 @import "./harness-palette.css";
-@import "../../../../vendor/deepseek-harness/source/packages/client/ui-theme/src/styles/base.css";
-@import "../../../../vendor/deepseek-harness/source/packages/client/ui-theme/src/styles/corner-shape.css";
-@import "../../../../vendor/deepseek-harness/source/packages/client/ui-theme/src/styles/gradient-shadow-text.css";
-@import "../../../../vendor/deepseek-harness/source/packages/client/ui-theme/src/styles/focus.css";
+@import "../styles/base.css";
+@import "../styles/corner-shape.css";
+@import "../styles/gradient-shadow-text.css";
+@import "../styles/focus.css";
+@import "../styles/scrollbar.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 

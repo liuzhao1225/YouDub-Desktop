@@ -4,10 +4,10 @@ import { Progress } from '@/components/ui/progress'
 import { Disclosure } from '@/components/ui/disclosure'
 import { Textarea } from '@/components/ui/textarea'
 import { assetUrl } from '@/lib/asset-url'
-import { copyText } from '@/lib/clipboard'
 import { NativeSelect } from '@/components/ui/native-select'
 import type { Bindings } from '../sdk'
-import { useId, useLayoutEffect, useRef, useState, type ComponentProps } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps } from 'react'
+import { cn } from '@/lib/utils'
 import { ArrowLeft, Check, Copy, Download, GitBranch, Loader2, RotateCw, Save, Search } from '@/lib/icons'
 import { Link, text, type GraphNode, type JsonObject, type JsonSchema, type NodeDetailProps, type NodeTypeDefinition, type PanelProps, type RouteProps, type TaskNodeDetail, type TaskView, type WorkflowDocumentRecord } from '../sdk'
 import type { StudioDraftStore } from '@/runtime/studio-draft'
@@ -19,6 +19,8 @@ import { Button, buttonVariants } from '@/components/ui/button'
 import { Page, PageHeader, useWindowHeader } from '@/components/page-layout'
 import { Input } from '@/components/ui/input'
 import { InlineAlert } from '@/components/inline-alert'
+import { TaskErrorAlert } from '@/components/task-error-guidance'
+import { TaskLog } from '@/components/task-log'
 import { WorkflowCanvas } from './workflow-canvas'
 import { TaskState, taskProgressMessage } from './task-status'
 import { NodePluginBoundary } from './workflow-settings'
@@ -74,7 +76,7 @@ export function TaskWorkflowPanel({ task, request, navigate, useQuery }: PanelPr
 }
 function TaskGraph({ task, request, navigate, useQuery }: { task: TaskView } & Bindings<'request' | 'navigate' | 'useQuery'>) {
   const tx = useText()
-  const { data, error, refresh } = useQuery<{ items: NodeTypeDefinition[] }>('/api/v2/node-types')
+  const { data, error, refresh } = useQuery<{ items: NodeTypeDefinition[] }>('/api/node-types')
   const [failure, setFailure] = useState(''), [busy, setBusy] = useState(false)
   return <Surface as="section" className="overflow-hidden">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4"><h2 className="font-semibold">{tx("workflow.task.workflow")}</h2><div className="flex flex-wrap gap-2">
@@ -82,7 +84,7 @@ function TaskGraph({ task, request, navigate, useQuery }: { task: TaskView } & B
         setBusy(true); setFailure('')
         const copy = copyWorkflowLabels(task.graphSnapshot!, tx)
         const document = { ...copy, id: crypto.randomUUID(), title: `${copy.title} · ${tx("workflow.task.copy")}` }
-        void request<WorkflowDocumentRecord>('/api/v2/workflow-documents', { method: 'POST', body: JSON.stringify({ document }) }).then((record) => navigate(`/workflows/${record.id}?sourceTask=${task.id}`)).catch((failure: Error) => setFailure(failure.message)).finally(() => setBusy(false))
+        void request<WorkflowDocumentRecord>('/api/workflow-documents', { method: 'POST', body: JSON.stringify({ document }) }).then((record) => navigate(`/workflows/${record.id}?sourceTask=${task.id}`)).catch((failure: Error) => setFailure(failure.message)).finally(() => setBusy(false))
       }}><Copy />{tx("workflow.task.edit.workflow.copy")}</Button>
     </div></header>
     {(error || failure) && <div className="space-y-2 p-4"><InlineAlert>{error || failure}</InlineAlert>{error && <Button variant="outline" size="sm" onClick={refresh}><RotateCw />{tx("workflow.task.reload")}</Button>}</div>}
@@ -92,15 +94,15 @@ function TaskGraph({ task, request, navigate, useQuery }: { task: TaskView } & B
 
 export function TaskNodePage({ submissionStore, params, request, navigate, blockNavigation, useQuery, useSlot }: RouteProps & { submissionStore: StudioDraftStore } & Bindings<'request' | 'navigate' | 'blockNavigation' | 'useQuery' | 'useSlot'>) {
   const tx = useText()
-  const task = useQuery<TaskView>(`/api/v2/tasks/${encodeURIComponent(params.id)}`, 2000, taskNeedsPolling)
-  const detail = useQuery<TaskNodeDetail>(`/api/v2/tasks/${encodeURIComponent(params.id)}/nodes/${encodeURIComponent(params.nodeId)}`, 2000, taskNeedsPolling)
-  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/v2/node-types')
+  const task = useQuery<TaskView>(`/api/tasks/${encodeURIComponent(params.id)}`, 2000, taskNeedsPolling)
+  const detail = useQuery<TaskNodeDetail>(`/api/tasks/${encodeURIComponent(params.id)}/nodes/${encodeURIComponent(params.nodeId)}`, 2000, taskNeedsPolling)
+  const types = useQuery<{ items: NodeTypeDefinition[] }>('/api/node-types')
   const failure = task.error || detail.error || types.error
   const refresh = () => { task.refresh(); detail.refresh(); types.refresh() }
   if (!task.data || !detail.data || !types.data) return <Page>{failure ? <><InlineAlert>{failure}</InlineAlert><Button variant="outline" onClick={refresh}><RotateCw />{tx("workflow.task.reload")}</Button></> : <p role="status">{tx("workflow.task.loading")}</p>}</Page>
   return <NodeDetail submissionStore={submissionStore} useQuery={useQuery} request={request} navigate={navigate} blockNavigation={blockNavigation} useSlot={useSlot} task={task.data} detail={detail.data} types={types.data.items} error={failure} refresh={refresh} />
 }
-function NodeDetail({ submissionStore, task, detail, types, error, refresh, request, navigate, blockNavigation, useSlot, useQuery }: { submissionStore: StudioDraftStore; task: TaskView; detail: TaskNodeDetail; types: NodeTypeDefinition[]; error: string; refresh(): void } & Bindings<'request' | 'navigate' | 'blockNavigation' | 'useSlot' | 'useQuery'>) {
+function NodeDetail({ submissionStore, task, detail, types, error, refresh, request, navigate, blockNavigation, useSlot }: { submissionStore: StudioDraftStore; task: TaskView; detail: TaskNodeDetail; types: NodeTypeDefinition[]; error: string; refresh(): void } & Bindings<'request' | 'navigate' | 'blockNavigation' | 'useSlot' | 'useQuery'>) {
   const tx = useText(), { language } = useI18n(), windowHeader = useWindowHeader()
   const node = task.graphSnapshot?.nodes.find((item) => item.id === detail.nodeId)
   const definition = node && nodeDefinition(node, types)
@@ -154,7 +156,7 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
     const body = { actionId, expectedAttempt: detail.attempt, expectedTaskRevision: dirty ? baseline.current.taskRevision : detail.taskRevision, expectedOutputRevision: dirty ? baseline.current.revision : detail.outputRevision, ...(dirty ? { patch, continue: continueAfter } : {}) }
     try {
       setPending(actionId)
-      await request(`/api/v2/tasks/${task.id}/nodes/${detail.nodeId}/${dirty ? 'corrections' : 'approve'}`, { method: 'POST', body: JSON.stringify(body) })
+      await request(`/api/tasks/${task.id}/nodes/${detail.nodeId}/${dirty ? 'corrections' : 'approve'}`, { method: 'POST', body: JSON.stringify(body) })
       setPending(''); setPatch({}); setViewRevision(null); refresh()
       if (continueAfter && activeView.current) { guard.bypass(); navigate(`/tasks/${task.id}`) }
     } catch (error) {
@@ -166,7 +168,7 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
     setBusy(true); setFailure('')
     try {
       const payload = { config: {}, graphDocument: task.graphSnapshot, expectedAttempt: detail.attempt, expectedTaskRevision: detail.taskRevision, corrections: { [detail.nodeId]: { revision, patch } } }
-      setPreview(await request<RerunPreview>(`/api/v2/tasks/${task.id}/rerun-preview`, { method: 'POST', body: JSON.stringify(payload) }))
+      setPreview(await request<RerunPreview>(`/api/tasks/${task.id}/rerun-preview`, { method: 'POST', body: JSON.stringify(payload) }))
     } catch (error) { setFailure(error instanceof Error ? error.message : String(error)) }
     finally { setBusy(false) }
   }
@@ -177,7 +179,7 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
   async function createDerived() {
     if (!preview || busy || newTaskId) return
     setFailure('')
-    const next = await submissionStore.submit(submissionKey, request, JSON.stringify({ ...preview, id: crypto.randomUUID(), config: {}, graphDocument: task.graphSnapshot, corrections: { [detail.nodeId]: { revision, patch } } }), `/api/v2/tasks/${task.id}/rerun`)
+    const next = await submissionStore.submit(submissionKey, request, JSON.stringify({ ...preview, id: crypto.randomUUID(), config: {}, graphDocument: task.graphSnapshot, corrections: { [detail.nodeId]: { revision, patch } } }), `/api/tasks/${task.id}/rerun`)
     if (next) openDerived(next)
   }
   const generic = detail.spec.operation === 'speech.synthesize/v1' && displayed.speechAudio
@@ -194,14 +196,34 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
       {!!definition?.corrections && (hasEditor || dirty) && <Button size={windowHeader ? "sm" : "default"} variant="outline" disabled={!dirty || busy || !!pending} onClick={() => void submit(false).catch(() => undefined)}><Save />{tx("workflow.task.save.correction")}</Button>}
       <Button size={windowHeader ? "sm" : "default"} disabled={busy || !!pending} onClick={() => void submit(true).catch(() => undefined)}>{busy ? <Loader2 className="animate-spin" /> : <Check />}{finishesTask ? dirty ? tx("workflow.task.save.and.complete") : tx("workflow.task.approve.and.complete") : dirty ? tx("workflow.task.save.and.continue") : tx("workflow.task.approve.and.continue")}</Button>
   </> : undefined
+  const shortcutRef = useRef({ canReview, dirty, busy, pending: Boolean(pending), submit })
+  useEffect(() => {
+    shortcutRef.current = { canReview, dirty, busy, pending: Boolean(pending), submit }
+  })
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return
+      const cur = shortcutRef.current
+      if (!cur.canReview || cur.busy || cur.pending) return
+      if (event.key.toLowerCase() === 's' && cur.dirty) {
+        event.preventDefault()
+        void cur.submit(false).catch(() => undefined)
+      } else if (event.key === 'Enter') {
+        event.preventDefault()
+        void cur.submit(true).catch(() => undefined)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
   return <Page>
     {guard.dialog}
     <PageHeader leading={<Link href={`/tasks/${task.id}`} aria-label={tx("workflow.task.back.to.task")} title={tx("workflow.task.back.to.task")} className="inline-flex items-center text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /></Link>} title={node?.label || text(definition?.label, language) || text(detail.step.label, language)} badge={<TaskState status={detail.step.status} />} actions={windowHeader ? reviewActions : undefined} />
     {(error || failure) && <div className="space-y-2"><InlineAlert>{error || failure}</InlineAlert>{error && <Button variant="outline" size="sm" onClick={refresh}><RotateCw />{tx("workflow.task.reload")}</Button>}</div>}
-    {detail.step.error && <InlineAlert>{detail.step.error.message}</InlineAlert>}
+    {detail.step.error && <TaskErrorAlert error={detail.step.error} navigate={navigate} />}
     {['running', 'waiting'].includes(detail.step.status) && <div className="space-y-2 text-sm text-muted-foreground" role="status">{detail.step.message && <p>{taskProgressMessage(detail.step.message, tx)}</p>}{detail.step.status === 'running' && detail.step.progress != null && <Progress label={tx("workflow.task.node.progress")} value={detail.step.progress} />}</div>}
     {pending && !busy && <div className="space-y-2"><InlineAlert tone="warning">{tx("workflow.task.submission.needs.verification")}</InlineAlert><Button variant="outline" disabled={busy} onClick={() => {
-      setBusy(true); void request(`/api/v2/tasks/${task.id}/actions/${pending}`).then(() => { setPending(''); setPatch({}); setFailure(''); refresh() }).catch((error: Error & { status?: number }) => { setFailure(error.message); if (error.status === 404) setPending('') }).finally(() => setBusy(false))
+      setBusy(true); void request(`/api/tasks/${task.id}/actions/${pending}`).then(() => { setPending(''); setPatch({}); setFailure(''); refresh() }).catch((error: Error & { status?: number }) => { setFailure(error.message); if (error.status === 404) setPending('') }).finally(() => setBusy(false))
     }}>{tx("workflow.task.check.submission")}</Button></div>}
     <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3"><Segmented id={tabsId} value={tab} onChange={setTab} ariaLabel={node?.label || text(definition?.label, language) || text(detail.step.label, language)} options={(['result', 'inputs', 'config', 'log'] as const).map(value => ({ value, label: value === 'result' ? tx("workflow.task.results") : value === 'inputs' ? tx("workflow.task.inputs") : value === 'config' ? tx("workflow.task.configuration") : tx("workflow.task.task.log") }))} />
       {tab === 'result' && !!detail.resultRevisions.length && <label className="ml-auto flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">{tx("workflow.task.version")}<NativeSelect disabled={dirty || busy || !!pending} value={revision} onChange={(event) => setViewRevision(Number(event.target.value))}>{detail.resultRevisions.map((item) => <option key={item.revision} value={item.revision}>{item.revision} · {item.source === 'computed' ? tx("workflow.task.original") : tx("workflow.task.correction")}{detail.approvedRevision === item.revision ? ` · ${tx("workflow.task.approved")}` : ''}</option>)}</NativeSelect></label>}
@@ -220,7 +242,7 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
     </section>}
     {tab === 'inputs' && <ResultViewer taskId={task.id} value={detail.inputs} labels={Object.fromEntries((definition?.inputs ?? []).map(port => [port.id, text(port.label, language)]))} />}
     {tab === 'config' && <NodeConfiguration node={node} definition={definition} raw={node ?? detail.spec} />}
-    {tab === 'log' && <NodeLog useQuery={useQuery} active={taskNeedsPolling(task)} taskId={task.id} />}
+    {tab === 'log' && <TaskLog active={taskNeedsPolling(task)} taskId={task.id} request={request} />}
     {canReview && !windowHeader && <div className="sticky bottom-20 z-20 flex flex-wrap items-center justify-end gap-2 border-t border-border bg-background/95 py-3 backdrop-blur-sm lg:bottom-0">{reviewActions}</div>}
     {((canDerive && dirty) || newTaskId) && <Surface as="section" className="space-y-4 p-4">
       <h2 className="font-semibold">{tx("workflow.task.generate.again.with.corrections")}</h2>
@@ -260,7 +282,7 @@ function ConfigurationValues({ value, schema, nested = false }: { value: JsonObj
   })}</dl>
   return nested ? content : <Surface as="div" className="px-4">{content}</Surface>
 }
-function TranscriptEditor({ value, readOnly, onChange, onSeek }: { value: Transcript; readOnly: boolean; onChange(value: Transcript): void; onSeek?(seconds: number): void }) {
+function TranscriptEditor({ value, readOnly, activeTimeMs = null, onChange, onSeek }: { value: Transcript; readOnly: boolean; activeTimeMs?: number | null; onChange(value: Transcript): void; onSeek?(seconds: number, endSeconds?: number): void }) {
   const tx = useText(), [search, setSearch] = useState('')
   const visible = value.segments.map((segment, index) => ({ segment, index })).filter(({ segment }) => !search || segment.text.toLowerCase().includes(search.toLowerCase()))
   function update(index: number, patch: Partial<Transcript['segments'][number]>) {
@@ -269,28 +291,62 @@ function TranscriptEditor({ value, readOnly, onChange, onSeek }: { value: Transc
   return <section className="space-y-2"><div className="relative max-w-sm"><Input icon={<Search className="size-4" />} aria-label={tx("workflow.task.search.transcript")} placeholder={tx("workflow.task.search.transcript")} value={search} onChange={(event) => setSearch(event.target.value)} /></div>
     {!visible.length && <p className="py-4 text-sm text-muted-foreground" role="status">{tx("workflow.task.no.matching.text")}</p>}
     {visible.length > 0 && <Surface as="div" className="divide-y divide-border overflow-hidden">
-    {visible.map(({ segment, index }) => <div key={segment.id} className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 p-3 @min-[720px]/page:grid-cols-[auto_auto_minmax(0,1fr)]">
-      <span className="flex h-9 min-w-[2ch] items-center justify-end text-xs tabular-nums text-muted-foreground" title={String(segment.id)}>{index + 1}</span>
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex h-9 items-center gap-1">
-          <Input className="w-20 tabular-nums" aria-label={`${tx("workflow.task.start")} ${index + 1}`} title={tx("workflow.task.start.s")} type="number" step="0.001" min="0" readOnly={readOnly} value={segment.start_ms / 1000} onChange={(event) => update(index, { start_ms: Math.round(Number(event.target.value) * 1000) })} />
-          <span aria-hidden="true" className="text-xs text-subtle-foreground">—</span>
-          <Input className="w-20 tabular-nums" aria-label={`${tx("workflow.task.end")} ${index + 1}`} title={tx("workflow.task.end.s")} type="number" step="0.001" min="0" readOnly={readOnly} value={segment.end_ms / 1000} onChange={(event) => update(index, { end_ms: Math.round(Number(event.target.value) * 1000) })} />
-          <span aria-hidden="true" className="pr-2 text-xs text-subtle-foreground">s</span>
+    {visible.map(({ segment, index }) => {
+      const playingHere = activeTimeMs !== null && activeTimeMs >= segment.start_ms && activeTimeMs <= segment.end_ms
+      return <div key={segment.id} className={cn('grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2 p-3 transition-colors @min-[720px]/page:grid-cols-[auto_auto_minmax(0,1fr)]', playingHere && 'bg-accent/35')}>
+        <span className="flex h-9 min-w-[2ch] items-center justify-end text-xs tabular-nums text-muted-foreground" title={String(segment.id)}>{index + 1}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex h-9 items-center gap-1">
+            <Input className="w-20 tabular-nums" aria-label={`${tx("workflow.task.start")} ${index + 1}`} title={tx("workflow.task.start.s")} type="number" step="0.001" min="0" readOnly={readOnly} value={segment.start_ms / 1000} onChange={(event) => update(index, { start_ms: Math.round(Number(event.target.value) * 1000) })} />
+            <span aria-hidden="true" className="text-xs text-subtle-foreground">—</span>
+            <Input className="w-20 tabular-nums" aria-label={`${tx("workflow.task.end")} ${index + 1}`} title={tx("workflow.task.end.s")} type="number" step="0.001" min="0" readOnly={readOnly} value={segment.end_ms / 1000} onChange={(event) => update(index, { end_ms: Math.round(Number(event.target.value) * 1000) })} />
+            <span aria-hidden="true" className="pr-2 text-xs text-subtle-foreground">s</span>
+          </div>
+          {onSeek && <Button size="sm" variant={playingHere ? 'secondary' : 'ghost'} aria-label={`${tx("workflow.task.locate")} ${index + 1}`} onClick={() => onSeek(segment.start_ms / 1000, segment.end_ms / 1000)}>{tx("workflow.task.locate")}</Button>}
         </div>
-        {onSeek && <Button size="sm" variant="ghost" aria-label={`${tx("workflow.task.locate")} ${index + 1}`} onClick={() => onSeek(segment.start_ms / 1000)}>{tx("workflow.task.locate")}</Button>}
+        <div className="col-start-2 min-w-0 @min-[720px]/page:col-start-auto"><SegmentTextArea aria-label={`${tx("workflow.task.transcript")} ${index + 1}`} readOnly={readOnly} value={segment.text} onChange={(event) => update(index, { text: event.target.value })} /></div>
       </div>
-      <div className="col-start-2 min-w-0 @min-[720px]/page:col-start-auto"><SegmentTextArea aria-label={`${tx("workflow.task.transcript")} ${index + 1}`} readOnly={readOnly} value={segment.text} onChange={(event) => update(index, { text: event.target.value })} /></div>
-    </div>)}</Surface>}
+    })}</Surface>}
   </section>
 }
 export function TranscriptNodeDetails({ detail, outputs, draft, readOnly, onDraftChange }: NodeDetailProps) {
   const audio = detail.inputs.audio as { id?: string; schemaId?: string } | undefined
-  const url = audio?.id ? assetUrl(`/api/v2/tasks/${encodeURIComponent(detail.taskId)}/artifacts/${encodeURIComponent(audio.id)}`) : ''
+  const url = audio?.id ? assetUrl(`/api/tasks/${encodeURIComponent(detail.taskId)}/artifacts/${encodeURIComponent(audio.id)}`) : ''
   const ref = useRef<HTMLAudioElement>(null)
+  const clipEndRef = useRef<number | null>(null)
+  const programmaticPlayRef = useRef(false)
+  const [activeTimeMs, setActiveTimeMs] = useState<number | null>(null)
   useReleaseMediaOnUnmount(ref, url)
   const value = (draft.transcript ?? outputs.transcript) as Transcript | undefined
-  return value ? <div className="space-y-3">{url && <audio ref={ref} controls preload="metadata" src={url} className="sticky top-4 z-10 h-10 w-full" />}<TranscriptEditor value={value} readOnly={readOnly} onSeek={url ? (seconds) => { if (ref.current) ref.current.currentTime = seconds } : undefined} onChange={(transcript) => onDraftChange({ ...draft, transcript })} /></div> : null
+  return value ? <div className="space-y-3">{url && <audio
+    ref={ref}
+    controls
+    preload="metadata"
+    src={url}
+    onTimeUpdate={(event) => {
+      const el = event.currentTarget
+      setActiveTimeMs(Math.round(el.currentTime * 1000))
+      if (clipEndRef.current !== null && el.currentTime >= clipEndRef.current) {
+        el.pause()
+        clipEndRef.current = null
+      }
+    }}
+    onPlay={() => {
+      if (!programmaticPlayRef.current) clipEndRef.current = null
+      programmaticPlayRef.current = false
+    }}
+    onPause={() => {
+      clipEndRef.current = null
+    }}
+    className="sticky top-4 z-10 h-10 w-full"
+  />}<TranscriptEditor value={value} readOnly={readOnly} activeTimeMs={activeTimeMs} onSeek={url ? (seconds, endSeconds) => {
+    const el = ref.current
+    if (!el) return
+    el.currentTime = seconds
+    clipEndRef.current = endSeconds ?? null
+    programmaticPlayRef.current = true
+    void el.play?.()?.catch?.(() => {})
+  } : undefined} onChange={(transcript) => onDraftChange({ ...draft, transcript })} /></div> : null
 }
 export function TranslationNodeDetails({ detail, outputs, draft, readOnly, onDraftChange }: NodeDetailProps) {
   const value = (draft.translation ?? outputs.translation) as Translation | undefined
@@ -319,7 +375,7 @@ function SpeechResult({ taskId, value, translation, historical, raw }: { taskId:
       // The worker preserves the translation segment ID; array order is not an association.
       const matches = historical ? [] : translation?.segments.filter((item) => item.segment_id === segment.id) ?? []
       const sentence = matches.length === 1 ? matches[0].text : undefined
-      const url = assetUrl(`/api/v2/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(segment.audio.id)}`)
+      const url = assetUrl(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(segment.audio.id)}`)
       const label = `${tx("workflow.task.speech")} ${index + 1}`
       return <li key={`${segment.id}-${index}`} aria-label={label} className="grid grid-cols-[2ch_minmax(0,1fr)] items-center gap-3 p-3 @min-[640px]/page:grid-cols-[2ch_minmax(0,1fr)_minmax(16rem,1fr)]">
         <span className="text-right text-xs tabular-nums text-muted-foreground" title={segment.id}>{index + 1}</span>
@@ -352,7 +408,7 @@ function ResultViewer({ taskId, value, labels = {} }: { taskId: string; value: u
   const counts = new Map<string, number>(), seen = new Map<string, number>()
   for (const artifact of artifacts.values()) counts.set(artifact.label, (counts.get(artifact.label) ?? 0) + 1)
   return <div className="space-y-2">{[...artifacts.values()].map((artifact, index) => {
-    const url = assetUrl(`/api/v2/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifact.id)}`)
+    const url = assetUrl(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifact.id)}`)
     const audio = artifact.schemaId.startsWith('audio/'), video = artifact.schemaId.startsWith('video/')
     seen.set(artifact.label, (seen.get(artifact.label) ?? 0) + 1)
     const label = artifact.label + ((counts.get(artifact.label) ?? 0) > 1 ? ` ${seen.get(artifact.label)}` : '')
@@ -361,9 +417,4 @@ function ResultViewer({ taskId, value, labels = {} }: { taskId: string; value: u
       {(audio || video) && <div className="min-w-0 flex-1"><Media url={url} video={video} /></div>}
     </Surface>
   })}<RawResult value={value} /></div>
-}
-function NodeLog({ taskId, active, useQuery }: { taskId: string; active: boolean } & Bindings<'useQuery'>) {
-  const tx = useText(), [error, setError] = useState('')
-  const query = useQuery<string>(`/api/v2/tasks/${taskId}/log`, active ? 3000 : undefined)
-  return <section className="space-y-3">{(query.error || error) && <InlineAlert>{query.error || error}</InlineAlert>}<Surface as="div" className="overflow-hidden"><div className="flex items-center justify-end gap-2 border-b border-border p-3">{query.error && <Button variant="outline" size="sm" onClick={query.refresh}><RotateCw />{tx("workflow.task.reload")}</Button>}<Button variant="outline" size="sm" disabled={!query.data} onClick={() => { void copyText(query.data ?? '').catch((failure: Error) => setError(failure.message)) }}><Copy />{tx("workflow.task.copy.task.log")}</Button></div><pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words p-4 text-xs leading-relaxed">{query.data}</pre></Surface></section>
 }

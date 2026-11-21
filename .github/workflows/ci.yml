@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      package_desktop:
+        description: 构建双平台桌面候选安装包
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Host 与 Python 测试
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: 安装依赖并运行后端测试
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m venv .venv
+          .venv/bin/python -m pip install -r backend/requirements/base.txt -r backend/requirements-test.txt pytest
+          .venv/bin/python -m nltk.downloader -d "$GITHUB_WORKSPACE/.cache/nltk_data" punkt_tab
+          echo "NLTK_DATA=$GITHUB_WORKSPACE/.cache/nltk_data" >> "$GITHUB_ENV"
+          node scripts/test-backend.mjs
+
+  web:
+    name: 前端质量与安全
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: 安装并检查 Web 前端
+        run: |
+          npm --prefix apps/web ci --ignore-scripts --no-audit --no-fund
+          npm --prefix apps/web run typecheck
+          npm --prefix apps/web run lint
+          npm --prefix apps/web run test
+          npm --prefix apps/web run build
+
+  desktop:
+    name: Desktop typecheck, build & release scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: 安装并构建桌面壳与脚本测试
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm --prefix apps/desktop install --ignore-scripts --no-audit --no-fund
+          npm --prefix apps/desktop run typecheck
+          npm --prefix apps/desktop run build
+          node --test scripts/download-releases.test.mjs
+
+  package-macos:
+    name: Package macOS candidate
+    needs: [backend, web, desktop]
+    if: github.event_name == 'workflow_dispatch' && inputs.package_desktop
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CSC_FOR_PULL_REQUEST: "true"
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: 安装依赖并打包 macOS 应用
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm --prefix apps/web ci --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm --prefix apps/desktop install --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm run package:desktop -- --dir
+          tar -czf dist/youdub-macos-unsigned.tar.gz -C dist/mac-arm64 YouDub.app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: youdub-macos-unsigned
+          path: dist/youdub-macos-unsigned.tar.gz
+          if-no-files-found: error
+
+  package-windows:
+    name: Package Windows candidate
+    needs: [backend, web, desktop]
+    if: github.event_name == 'workflow_dispatch' && inputs.package_desktop
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+    steps:
+      - name: 保持源码字节与链接
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+          git config --global core.symlinks true
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: 安装依赖并打包 Windows 应用
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm --prefix apps/web ci --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm --prefix apps/desktop install --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm run package:desktop -- --dir
+          npm run package:desktop -- --installers-only
+          cd dist
+          for file in YouDub-*.exe YouDub-*.zip; do
+            sha256sum "$file" > "$file.sha256"
+            sha256sum --check "$file.sha256"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: youdub-windows-release
+          path: |
+            dist/YouDub-*.exe
+            dist/YouDub-*.zip
+            dist/YouDub-*.sha256
+            dist/latest.yml
+            dist/latest.yml.sha256
+          if-no-files-found: error

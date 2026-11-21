@@ -10,7 +10,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from ..config import ffprobe_binary
+from ..config import ffmpeg_binary, ffprobe_binary
 from .errors import ApiError
 
 
@@ -129,3 +129,33 @@ def inspect_video(
     info = {"duration_ms": duration_ms, "width": width, "height": height, "frame_rate": frame_rate,
             "video_codec": video.get("codec_name"), "audio_codec": audio.get("codec_name")}
     return info
+
+
+def prepare_media(
+    video: Path,
+    work_dir: Path,
+    check_cancel: Callable[[], None],
+    progress: Callable[[float | None, str], None] | None = None,
+) -> tuple[dict[str, Any], Path, Path]:
+    """Inspect source video and extract canonical 44.1 kHz stereo PCM audio."""
+    check_cancel()
+    info = inspect_video(video, check_cancel)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    source_audio = work_dir / "sourceAudio.wav"
+    media_json = work_dir / "media.json"
+    if progress:
+        progress(None, "Extracting source audio")
+    try:
+        result = _run_media([
+            ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-xerror",
+            "-i", str(video.resolve()), "-map", "0:a:0", "-vn",
+            "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(source_audio.resolve()),
+        ], check_cancel=check_cancel)
+    except FileNotFoundError as exc:
+        raise ApiError(503, "RUNTIME_UNAVAILABLE", "ffmpeg is unavailable.", stage="prepare") from exc
+    if result.returncode != 0:
+        if source_audio.exists():
+            source_audio.unlink()
+        raise ApiError(422, "INVALID_MEDIA", "Source audio extraction failed.", field="file", stage="prepare")
+    media_json.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+    return info, source_audio, media_json

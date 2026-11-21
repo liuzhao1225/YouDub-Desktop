@@ -13,3 +13,12 @@ class ApiError(Exception):
         self.status_code = status_code
         self.content = {"error": {"code": code, "message": message, "field": field,
                                   "stage": stage, "action": action}}
+
+
+class OperationCancelledError(Exception):
+    """Raised when the host cancels an in-flight media operation."""
+
+    def __init__(self, code: str = "CANCELLED", message: str = "The host cancelled this invocation.") -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message

@@ -1,12 +1,12 @@
 import type { Bindings } from '../sdk'
-import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { ArrowRight, Link2, Loader2, X } from '@/lib/icons'
 import { Link, text, type Diagnostic, type GraphInput, type NodeTypeDefinition, type TaskView, type WorkflowDocument } from '../sdk'
 import { useI18n, useText } from '@/lib/i18n'
-import { videoSource } from '@youdub/sdk/video-source'
+import { videoSource } from '@/lib/video-source'
 import { Input } from '@/components/ui/input'
 import { LaunchCard, UploadSlot } from './media-upload'
-import { acceptsInputMime, compatibleInputFiles, videoLinkInput, withVideoLink, type InputFile } from './workflow-launch'
+import { acceptsInputMime, compatibleInputFiles, videoLinkInput, withVideoLink } from './workflow-launch'
 import { Button } from '@/components/ui/button'
 import { InlineAlert } from '@/components/inline-alert'
 import { ConfigEditor } from './schema-form'
@@ -23,11 +23,30 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
   const [localDraft, setLocalDraft] = useState<WorkflowRunDraft>({ selectedFiles: [], sourceUrl: '', runtimeByDocument: {} })
   const { selectedFiles, sourceUrl, proxyPort = 0, runtimeByDocument } = draft ?? localDraft
   const setDraft = onDraftChange ?? setLocalDraft
-  const setFiles = (selectedFiles: InputFile[]) => setDraft((current) => ({ ...current, selectedFiles }))
-  const setSourceUrl = (sourceUrl: string) => setDraft((current) => ({ ...current, sourceUrl }))
+  const setSourceUrl = useCallback((sourceUrl: string) => setDraft((current) => ({ ...current, sourceUrl })), [setDraft])
   const files = compatibleInputFiles(selectedFiles, document.inputs)
   const [linkTouched, setLinkTouched] = useState(false)
+  const [localError, setError] = useState(''), [validating, setValidating] = useState(false)
   const linkInput = videoLinkInput(document, types)
+  const changeFile = useCallback((input: GraphInput, file?: File) => {
+    // macOS may omit SRT's MIME type; multipart would otherwise send octet-stream.
+    if (file && input.schemaId === 'application/x-subrip/v1' && /\.srt$/i.test(file.name) && (!file.type || file.type === 'application/octet-stream')) {
+      file = new File([file], file.name, { type: 'application/x-subrip', lastModified: file.lastModified })
+    }
+    const invalid = Boolean(file && !acceptsInputMime(input, file))
+    setDraft((current) => {
+      const currentFiles = compatibleInputFiles(current.selectedFiles, document.inputs)
+      const next = document.inputs.filter((item) => item.id !== input.id && currentFiles[item.id]).map((item) => ({ input: item, file: currentFiles[item.id] }))
+      if (file && !invalid) next.push({ input, file })
+      return { ...current, selectedFiles: next, ...(file && !invalid && input.id === linkInput?.id ? { sourceUrl: '' } : {}) }
+    })
+    if (invalid && file) {
+      setError(tx("workflow.run.value.is.not.a.supported.file.type", { value1: file.name }))
+      return
+    }
+    if (file && input.id === linkInput?.id) setLinkTouched(false)
+    setError('')
+  }, [document.inputs, linkInput?.id, setDraft, setError, setLinkTouched, tx])
   let source: ReturnType<typeof videoSource> | undefined, linkError = ''
   if (linkInput && sourceUrl.trim()) {
     try { source = videoSource(sourceUrl) } catch (failure) { linkError = failure instanceof Error ? failure.message : String(failure) }
@@ -38,7 +57,6 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
   const runDocument = imported?.document ?? document
   const runtime = runtimeByDocument[document.id] ?? {}
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([])
-  const [localError, setError] = useState(''), [validating, setValidating] = useState(false)
   const [localStore] = useState(() => new StudioDraftStore())
   const store = submissionStore ?? localStore
   const submissionKey = `graph:${document.id}`
@@ -57,11 +75,38 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
   const locked = busy || !!pending
   usePendingUnload(locked)
   useEffect(() => { onLockChange(locked) }, [locked, onLockChange])
+
+  useEffect(() => {
+    if (!prominent || locked || typeof window === 'undefined') return
+    const handlePaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      const pastedFile = event.clipboardData?.files?.[0]
+      const firstInput = document.inputs[0]
+      if (pastedFile && firstInput) {
+        event.preventDefault()
+        changeFile(firstInput, pastedFile)
+        return
+      }
+      const pastedText = event.clipboardData?.getData('text/plain')?.trim()
+      if (!pastedText || !linkInput) return
+      try {
+        const parsed = videoSource(pastedText)
+        event.preventDefault()
+        changeFile(linkInput, undefined)
+        setSourceUrl(parsed.url)
+        setLinkTouched(false)
+        setError('')
+      } catch { /* ignore unrelated clipboard text */ }
+    }
+    window.addEventListener('paste', handlePaste)
+    return () => window.removeEventListener('paste', handlePaste)
+  }, [prominent, locked, linkInput, document.inputs, changeFile, setSourceUrl])
   async function run() {
     if (locked || !complete || !resources.ready) return
     setValidating(true); setError(''); setDiagnostics([])
     try {
-      const validation = await request<{ valid: boolean; diagnostics: Diagnostic[] }>('/api/v2/workflow-documents/validate', { method: 'POST', body: JSON.stringify({ document: runDocument, nodeRuntimeInputs: runRuntime }) })
+      const validation = await request<{ valid: boolean; diagnostics: Diagnostic[] }>('/api/workflow-documents/validate', { method: 'POST', body: JSON.stringify({ document: runDocument, nodeRuntimeInputs: runRuntime }) })
       if (!activeView.current) return
       setDiagnostics(validation.diagnostics)
       if (!validation.valid) return
@@ -75,21 +120,6 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
       setError(failure instanceof Error ? failure.message : String(failure)); setDiagnostics(workflowDiagnostics(failure))
     } finally { if (activeView.current) setValidating(false) }
   }
-  function changeFile(input: GraphInput, file?: File) {
-    // macOS may omit SRT's MIME type; multipart would otherwise send octet-stream.
-    if (file && input.schemaId === 'application/x-subrip/v1' && /\.srt$/i.test(file.name) && (!file.type || file.type === 'application/octet-stream')) {
-      file = new File([file], file.name, { type: 'application/x-subrip', lastModified: file.lastModified })
-    }
-    const next = document.inputs.filter((item) => item.id !== input.id && files[item.id]).map((item) => ({ input: item, file: files[item.id] }))
-    if (file && !acceptsInputMime(input, file)) {
-      setFiles(next)
-      setError(tx("workflow.run.value.is.not.a.supported.file.type", { value1: file.name }))
-      return
-    }
-    if (file) next.push({ input, file })
-    if (file && input.id === linkInput?.id) { setSourceUrl(''); setLinkTouched(false) }
-    setFiles(next); setError('')
-  }
   const material = <div>
     {linkInput && <div className="pt-3 pb-1">
       <div className="flex min-w-0 items-center gap-2">
@@ -97,7 +127,7 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
           setSourceUrl(event.target.value); setLinkTouched(false); setError('')
           if (event.target.value) changeFile(linkInput, undefined)
         }} />
-        {source && <span className="shrink-0 text-xs text-muted-foreground">{source.platform === 'Bilibili' ? 'B 站' : 'YouTube'}</span>}
+        {source && <span className="inline-flex shrink-0 items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-foreground">{source.platform === 'Bilibili' ? 'B 站' : 'YouTube'}</span>}
         {sourceUrl && <Button variant="ghost" size="icon-sm" disabled={locked} aria-label={tx("workflow.run.clear.link")} onClick={() => { setSourceUrl(''); setLinkTouched(false) }}><X /></Button>}
       </div>
       {linkTouched && linkError && <div className="mt-2"><InlineAlert>{linkError}</InlineAlert></div>}

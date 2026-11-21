@@ -7,20 +7,21 @@ import { cn } from '@/lib/utils'
 type FieldChange<T> = { target: T; currentTarget: T }
 type Props = Pick<ComponentProps<typeof Button>, 'id' | 'disabled' | 'className' | 'title' | 'aria-label' | 'aria-labelledby'> & {
   children: ReactNode
+  size?: 'sm' | 'md'
   value: string | number
   onChange: (event: FieldChange<{ value: string }>) => void
 }
 /** Preserve domain field callbacks while Harness Menu owns focus, keyboard and portal behavior. */
-export function NativeSelect({ children, value, onChange, disabled, className, ...props }: Props) {
+export function NativeSelect({ children, value, onChange, disabled, size, className, ...props }: Props) {
   const [open, setOpen] = useState(false)
   const items = childrenItems(children), current = String(value)
   const selected = items.find(item => item.id === current)
   return <Menu open={open} portal autoFocus selectedId={current} items={items} onClose={() => setOpen(false)} onSelect={next => {
     onChange({ target: { value: next }, currentTarget: { value: next } })
     setOpen(false)
-  }} className={cn('yd-select', layoutClasses(className))} anchor={<Button {...props} type="button" variant="outline" disabled={disabled} className={cn('gap-2 [&_svg]:size-4 [&_svg]:shrink-0', className)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={event => {
+  }} className={cn('yd-select', layoutClasses(className))} anchor={<Button {...props} type="button" size={size} variant="outline" disabled={disabled} className={cn('min-w-0 justify-between gap-2 [&_svg]:size-4 [&_svg]:shrink-0', className)} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={event => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true) }
-  }}>{selected?.label ?? items[0]?.label ?? '—'}<IconChevronDown aria-hidden="true" /></Button>} />
+  }}><span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? items[0]?.label ?? '—'}</span><IconChevronDown aria-hidden="true" /></Button>} />
 }
 
 type ChoiceProps = Omit<ComponentProps<typeof Checkbox>, 'label' | 'onChange'> & {

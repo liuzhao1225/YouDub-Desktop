@@ -1,15 +1,18 @@
-# YouDub 桌面资源
+# YouDub 桌面客户端
 
-当前 Electron 产品入口位于 [`apps/harness`](../harness/docs/DEVELOPMENT.md)。本目录保留 [`icon.svg`](icon.svg)，由产品开发构建生成应用图标。
+Electron 桌面壳，负责管理本地 Python FastAPI 后端进程、`safeStorage` 凭据桥接、原生窗口外观与应用内自动更新。
 
 在仓库根目录执行：
 
 ```sh
-npm run build:framework
-npm run build:desktop
+npm run build
 npm start
 ```
 
-`build:desktop` 与 `build:youdub` 生成相同的 Electron 开发产物。安装包、签名和公证见[发行流程](../../docs/releasing.md)。
+或启动完整桌面开发环境（Vite + Python FastAPI + Electron）：
 
-原 Swift/WKWebView 和 C#/WebView2 桌面壳已移除，历史源码见[裁剪前提交](https://github.com/liuzhao1225/YouDub-webui/tree/711e40e8e69d2c6f2065f15aecc90550dcbf695d/apps/desktop)。当前使用的框架子集见[保留范围](../harness/docs/FRAMEWORK-SCOPE.md)。
+```sh
+npm run dev
+```
+
+打包与发行流程见[发行流程](../../docs/releasing.md)。
