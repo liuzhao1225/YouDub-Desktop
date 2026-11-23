@@ -286,3 +286,121 @@ it('supports preset batch prepare, active variant pause, 2-step delete, yt-dlp s
     ),
   )
 })
+
+it('renders MPS backend, live environment preparing banner/activity without pause, and failed yt-dlp retry state', async () => {
+  const envInventory: ResourceInventory = {
+    version: '0.1.2',
+    platform: 'darwin',
+    arch: 'arm64',
+    osVersion: '27',
+    homeDir: '/Users/test',
+    environment: [
+      { id: 'python', name: 'Python 3.12', status: 'ready', detail: '/Users/test/YouDub/runtime/venv/bin/python' },
+      { id: 'ffmpeg', name: 'FFmpeg', status: 'ready', detail: '/Users/test/YouDub/runtime/ffmpeg/ffmpeg' },
+      {
+        id: 'dependencies',
+        name: 'Python 依赖',
+        status: 'running',
+        phase: 'downloading',
+        source: 'mirrors.aliyun.com',
+        activity: 'Downloading numpy',
+      },
+      { id: 'acceleration', name: '计算加速', status: 'ready', detail: 'Backend: mps' },
+    ],
+    items: [{ providerId: 'youdub.media', label: 'FFmpeg', automatic: true }],
+    models: [],
+    ytDlp: { version: null, installed: false },
+    resources: {
+      status: 'preparing',
+      selections: [],
+      requirements: [],
+      environment: [],
+      models: [],
+      entries: [
+        {
+          id: 'python',
+          name: 'Python 3.12',
+          group: 'environment',
+          status: 'ready',
+          actions: [],
+          dependencies: [],
+          detail: '/Users/test/YouDub/runtime/venv/bin/python',
+        },
+        {
+          id: 'ffmpeg',
+          name: 'FFmpeg',
+          group: 'environment',
+          status: 'ready',
+          actions: [],
+          dependencies: [],
+          detail: '/Users/test/YouDub/runtime/ffmpeg/ffmpeg',
+        },
+        {
+          id: 'dependencies',
+          name: 'Python 依赖',
+          group: 'environment',
+          status: 'preparing',
+          phase: 'downloading',
+          actions: [],
+          dependencies: [],
+          source: 'mirrors.aliyun.com',
+          activity: 'Downloading numpy',
+        },
+        {
+          id: 'acceleration',
+          name: '计算加速',
+          group: 'environment',
+          status: 'ready',
+          actions: [],
+          dependencies: [],
+          detail: 'Backend: mps',
+        },
+        {
+          id: 'youdub.download',
+          name: 'yt-dlp',
+          group: 'environment',
+          status: 'failed',
+          actions: ['retry'],
+          dependencies: ['python'],
+          error: 'pypi unreachable',
+        },
+      ],
+    },
+  }
+  const envInspection: ResourcePreparation = {
+    status: 'preparing',
+    selections: [],
+    environment: envInventory.environment,
+    models: [],
+    requirements: [{ providerId: 'youdub.media', automatic: true, ready: false, missingPackages: ['numpy'] }],
+    entries: envInventory.resources!.entries,
+  }
+  let failedMode = false
+  const request = vi.fn(async (path: string) => {
+    if (!failedMode) return path === '/api/resources' ? envInventory : envInspection
+    const failedEntries = envInventory.resources!.entries!.map((entry) =>
+      entry.id === 'dependencies' ? { ...entry, status: 'ready' as const, activity: undefined, source: undefined } : entry,
+    )
+    if (path === '/api/resources') {
+      return {
+        ...envInventory,
+        resources: { ...envInventory.resources!, status: 'failed' as const, entries: failedEntries },
+      }
+    }
+    return { ...envInspection, status: 'failed' as const, entries: failedEntries }
+  })
+
+  render(<LanguageProvider><SettingsResources title="资源" request={request as never} /></LanguageProvider>)
+
+  expect(await screen.findByText('当前加速后端：MPS')).toBeInTheDocument()
+  expect(screen.getByText('正在准备：Python 依赖')).toBeInTheDocument()
+  expect(screen.getAllByText('mirrors.aliyun.com · Downloading numpy').length).toBeGreaterThanOrEqual(1)
+  expect(screen.queryByRole('button', { name: /暂停/ })).not.toBeInTheDocument()
+
+  failedMode = true
+  await userEvent.setup().click(screen.getByRole('button', { name: '重新检测' }))
+
+  const dlRow = screen.getByRole('group', { name: '视频下载工具' })
+  await waitFor(() => expect(within(dlRow).getByRole('button', { name: '重试 视频下载工具' })).toBeEnabled())
+  expect(within(dlRow).getByText('pypi unreachable')).toBeInTheDocument()
+})

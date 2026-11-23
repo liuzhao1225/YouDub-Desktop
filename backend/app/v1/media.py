@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import subprocess
+import threading
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
@@ -21,29 +23,91 @@ def _invalid(message: str) -> ApiError:
 def _run_media(
     command: list[str], *, check_cancel: Callable[[], None],
     cwd: Path | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Poll cancellation while draining process output, and always reap it."""
     check_cancel()
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd) as process:
+        if on_stdout_line is None:
+            try:
+                while True:
+                    check_cancel()
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                check_cancel()
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                raise
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+        stdout_lines: list[str] = []
+        stderr_chunks: list[str] = []
+        line_queue: queue.Queue[str | None] = queue.Queue()
+
+        def _read_stdout() -> None:
+            assert process.stdout is not None
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    stdout_lines.append(line)
+                    line_queue.put(line)
+            except ValueError:
+                pass
+            finally:
+                line_queue.put(None)
+
+        def _read_stderr() -> None:
+            assert process.stderr is not None
+            try:
+                stderr_chunks.append(process.stderr.read())
+            except ValueError:
+                pass
+
+        out_thread = threading.Thread(target=_read_stdout, daemon=True)
+        err_thread = threading.Thread(target=_read_stderr, daemon=True)
+        out_thread.start()
+        err_thread.start()
         try:
-            while True:
+            stdout_eof = False
+            while not stdout_eof or process.poll() is None:
                 check_cancel()
                 try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+                    item = line_queue.get(timeout=0.05)
+                    while True:
+                        if item is None:
+                            stdout_eof = True
+                        else:
+                            on_stdout_line(item.rstrip("\r\n"))
+                        try:
+                            item = line_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                except queue.Empty:
+                    pass
+            process.wait()
+            out_thread.join(timeout=2)
+            err_thread.join(timeout=2)
             check_cancel()
         except BaseException:
             if process.poll() is None:
                 process.terminate()
                 try:
-                    process.communicate(timeout=2)
+                    process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.communicate()
+                    process.wait()
+            out_thread.join(timeout=1)
+            err_thread.join(timeout=1)
             raise
-        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        return subprocess.CompletedProcess(command, process.returncode, "".join(stdout_lines), "".join(stderr_chunks))
 
 
 def _probe(path: Path, check_cancel: Callable[[], None]) -> dict[str, Any]:

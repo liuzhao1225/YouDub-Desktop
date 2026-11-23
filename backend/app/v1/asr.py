@@ -60,9 +60,16 @@ def normalize_result(result: Any) -> dict:
         raise _invalid("Whisper did not return any speech segments.")
     segments = []
     for raw in raw_segments:
-        if not isinstance(raw, dict) or not isinstance(raw.get("text"), str) or not raw["text"].strip():
+        if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
             raise _invalid("Whisper returned an empty or invalid speech segment.")
         start_ms, end_ms = _milliseconds(raw.get("start")), _milliseconds(raw.get("end"))
+        if not raw["text"].strip():
+            # openai-whisper clears instantaneous or blank segments in-place (text="", tokens=[], words=[])
+            # while leaving them in segments; skip those empty placeholders.
+            raw_words, raw_tokens = raw.get("words"), raw.get("tokens")
+            if (raw_words is None or raw_words == []) and (raw_tokens is None or raw_tokens == []):
+                continue
+            raise _invalid("Whisper returned an empty or invalid speech segment.")
         speaker = raw.get("speaker_id", raw.get("speaker"))
         if speaker is not None:
             if not isinstance(speaker, str) or not speaker.strip():
@@ -80,6 +87,8 @@ def normalize_result(result: Any) -> dict:
             except (KeyError, TypeError) as exc:
                 raise _invalid("Whisper returned invalid word timestamps.") from exc
         segments.append(segment)
+    if not segments:
+        raise _invalid("Whisper did not return any speech segments.")
     return {"detected_language": language, "segments": segments}
 
 

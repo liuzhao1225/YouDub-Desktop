@@ -464,3 +464,26 @@ def test_malformed_word_objects_report_provider_error(raw_result, words):
         asr.normalize_result(raw_result)
     assert error.value.content["error"]["code"] == "INVALID_PROVIDER_RESULT"
     assert error.value.status_code == 502
+
+
+def test_whisper_cleared_empty_placeholder_segments_are_skipped(raw_result):
+    expected_count = len(raw_result["segments"])
+    raw_result["segments"].insert(
+        0,
+        {"start": 0.0, "end": 0.0, "text": "", "tokens": [], "words": []},
+    )
+    normalized = asr.normalize_result(raw_result)
+    assert len(normalized["segments"]) == expected_count
+    assert [seg["id"] for seg in normalized["segments"]] == [f"segment-{i:06d}" for i in range(1, expected_count + 1)]
+    assert normalized["segments"][0]["text"] == raw_result["segments"][1]["text"]
+
+
+def test_all_cleared_placeholder_segments_still_raise_invalid():
+    result = {
+        "language": "en",
+        "segments": [{"start": 0.0, "end": 0.0, "text": "", "tokens": [], "words": []}],
+    }
+    with pytest.raises(ApiError) as error:
+        asr.normalize_result(result)
+    assert error.value.content["error"]["code"] == "INVALID_PROVIDER_RESULT"
+    assert error.value.status_code == 502

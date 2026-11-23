@@ -13,6 +13,7 @@ export interface ResourceEntry {
   actions: ResourceAction[]
   dependencies: string[]
   detail?: string
+  activity?: string
   error?: string
   source?: string
   progress?: { received: number; total: number; speed?: number }
@@ -22,7 +23,7 @@ type ResourceEntriesInput = {
   status?: string
   error?: string
   environment?: Array<{
-    id: string; name: string; status: string; detail?: string; error?: string; source?: string
+    id: string; name: string; status: string; detail?: string; error?: string; source?: string; activity?: string
     phase?: ResourcePhase; progress?: { received: number; total: number; speed?: number }
   }>
   models?: Array<{
@@ -54,6 +55,7 @@ export function resourceEntries(input: ResourceEntriesInput): ResourceEntry[] {
       actions: status === 'pending' ? ['prepare'] : status === 'failed' ? ['retry'] : [],
       dependencies: [],
       detail: step.detail,
+      activity: step.activity,
       error: step.error,
       source: step.source,
       progress: step.progress,

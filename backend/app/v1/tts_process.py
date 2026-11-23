@@ -68,8 +68,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         traceback.print_exc()
         return _fail("MODEL_NOT_READY", f"The local VoxCPM2 model could not be loaded ({type(exc).__name__}).")
+    device_name = str(getattr(getattr(model, "tts_model", None), "device", None) or options.device)
+    print(json.dumps({"event": "loaded", "device": device_name, "total": len(clips)}), flush=True)
     try:
-        for clip in clips:
+        for index, clip in enumerate(clips, start=1):
             waveform = np.asarray(model.generate(
                 text=clip["text"], reference_wav_path=clip["reference_path"],
                 prompt_wav_path=clip["reference_path"], prompt_text=clip["reference_text"],
@@ -79,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
                     or np.max(np.abs(waveform)) > 1):
                 raise ValueError("VoxCPM2 returned an empty or invalid mono waveform")
             sf.write(clip["output_path"], waveform, sample_rate, format="WAV", subtype="PCM_16")
+            print(
+                json.dumps({"event": "clip", "done": index, "total": len(clips), "segment_id": clip["segment_id"]}),
+                flush=True,
+            )
     except Exception as exc:
         traceback.print_exc()
         return _fail("INVALID_PROVIDER_RESULT", f"VoxCPM2 speech generation failed ({type(exc).__name__}).")

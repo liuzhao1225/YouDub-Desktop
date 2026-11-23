@@ -54,6 +54,11 @@ export function ResourceRow({
   // the row and retain the complete, unchanged output in the disclosure.
   const errorSummary = entry.error?.replace(/^[^\n]+ exited \([^\n]+\)\.\r?\n/, '').trim().split(/\r?\n/, 1)[0] || entry.error
   const inlineDetail = subtitle ?? entry.detail
+  const liveText = inProgress
+    ? [entry.source, entry.activity ?? (typeof inlineDetail === 'string' ? inlineDetail : undefined)]
+        .filter(Boolean)
+        .join(' · ')
+    : undefined
   const showDiagnostics = compact
     ? Boolean(entry.error)
     : Boolean(entry.error || entry.detail || entry.source || (progress && !showProgress))
@@ -81,8 +86,13 @@ export function ResourceRow({
               </>
             )}
           </p>
-        ) : compact && !entry.error && !inProgress && inlineDetail ? (
-          <p className="truncate text-xs text-muted-foreground" title={typeof inlineDetail === 'string' ? inlineDetail : undefined}>{inlineDetail}</p>
+        ) : compact && !entry.error && (inProgress ? Boolean(liveText) : Boolean(inlineDetail)) ? (
+          <p
+            className="truncate text-xs text-muted-foreground"
+            title={inProgress ? liveText : (typeof inlineDetail === 'string' ? inlineDetail : undefined)}
+          >
+            {inProgress ? liveText : inlineDetail}
+          </p>
         ) : null}
       </div>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-2">

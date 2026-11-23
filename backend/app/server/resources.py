@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from ..accelerators import accelerator_status, hardware, installation_plan
+from ..accelerators import detect_devices, hardware, installation_plan
 from ..config import ffmpeg_binary, ffprobe_binary
 from .errors import AppError
 from .events import EventHub
@@ -32,8 +32,50 @@ from .settings import LLMProviderConfig, SettingsStore, default_data_dir
 MANIFESTS_DIR = Path(__file__).resolve().parents[1] / "manifests"
 REQUIREMENTS_DIR = Path(__file__).resolve().parents[2] / "requirements"
 REPO_ROOT = Path(__file__).resolve().parents[3]
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 _YTDLP_CHECK_TTL_SECONDS = 6 * 3600
+_FAILED_HOST_TTL_SECONDS = 120.0
+_MAX_LOG_BYTES = 64 * 1024
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_CHINA_MIRROR_HOSTS = frozenset(
+    {
+        "modelscope.cn",
+        "www.modelscope.cn",
+        "registry.npmmirror.com",
+        "mirrors.aliyun.com",
+        "pypi.tuna.tsinghua.edu.cn",
+        "modelscope-open.oss-cn-hangzhou.aliyuncs.com",
+    }
+)
+
+
+def _is_same_python_env(python_exec: str) -> bool:
+    """Compare Python executable paths without dereferencing cross-directory venv symlinks."""
+    candidate = os.path.normcase(os.path.abspath(os.path.expanduser(python_exec)))
+    current = os.path.normcase(os.path.abspath(sys.executable))
+    if candidate == current:
+        return True
+    if os.path.normcase(os.path.dirname(candidate)) == os.path.normcase(os.path.dirname(current)):
+        try:
+            return Path(candidate).resolve() == Path(current).resolve()
+        except OSError:
+            return False
+    return False
+
+
+def _append_state_log(state: DownloadProgressState, line: str) -> None:
+    clean = _ANSI_ESCAPE_RE.sub("", line).strip()
+    if not clean:
+        return
+    state.updated_at = int(time.time() * 1000)
+    prefix = "[较早日志已省略]\n"
+    existing = state.log[len(prefix) :] if state.log.startswith(prefix) else state.log
+    combined = f"{existing}{clean}\n"
+    if len(combined) > _MAX_LOG_BYTES:
+        tail = combined[-_MAX_LOG_BYTES:]
+        nl = tail.find("\n")
+        combined = prefix + (tail[nl + 1 :] if nl != -1 else tail)
+    state.log = combined
 
 
 def _version_tuple(version: str | None) -> tuple[int, ...]:
@@ -95,6 +137,8 @@ class DownloadProgressState:
     error: str | None = None
     detail: str | None = None
     phase: str | None = None  # downloading | installing | verifying
+    activity: str | None = None
+    log: str = ""
     pause_requested: bool = False
     started_at: int | None = None
     updated_at: int | None = None
@@ -129,8 +173,11 @@ class ResourceManager:
         self._pending_targets: list[str] = []
         self._ffmpeg_cache: tuple[str, tuple[str | None, str | None]] | None = None
         self._pkg_cache: tuple[str, dict[str, str | None]] | None = None
+        self._venv_verify_cache: tuple[str, bool] | None = None
+        self._device_cache: tuple[str, list[dict[str, Any]]] | None = None
         self._yt_dlp_version_cache: tuple[str, str | None] | None = None
         self._yt_dlp_latest_cache: tuple[float, str | None] | None = None
+        self._failed_hosts: dict[str, float] = {}
         self._last_emit = 0.0
 
     def _emit_updated(self, *, force: bool = False) -> None:
@@ -173,7 +220,14 @@ class ResourceManager:
             return None
         venv = data / "runtime" / "venv"
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-        return py if py.is_file() else None
+        if not py.is_file():
+            return None
+        cache_key = str(py)
+        if self._venv_verify_cache and self._venv_verify_cache[0] == cache_key:
+            return py if self._venv_verify_cache[1] else None
+        ok = self._verify_executable(cache_key, ["-c", "import sys; assert sys.version_info[:2] == (3, 12)"])
+        self._venv_verify_cache = (cache_key, ok)
+        return py if ok else None
 
     def compute_python(self) -> str | None:
         override = os.getenv("YOUDUB_COMPUTE_PYTHON", "").strip()
@@ -191,7 +245,7 @@ class ResourceManager:
         cache_key = python_exec
         if self._pkg_cache and self._pkg_cache[0] == cache_key:
             return self._pkg_cache[1]
-        if Path(python_exec).resolve() == Path(sys.executable).resolve():
+        if _is_same_python_env(python_exec):
             result: dict[str, str | None] = {}
             all_dists = {
                 dist
@@ -226,7 +280,15 @@ class ResourceManager:
                 timeout=10,
                 check=True,
             )
-            parsed = json.loads(proc.stdout)
+            text = proc.stdout.strip()
+            parsed: Any = None
+            if text:
+                try:
+                    parsed = json.loads(text)
+                except ValueError:
+                    lines = [line.strip() for line in text.splitlines() if line.strip()]
+                    if lines:
+                        parsed = json.loads(lines[-1])
             if isinstance(parsed, dict):
                 self._pkg_cache = (cache_key, parsed)
                 return parsed
@@ -236,8 +298,125 @@ class ResourceManager:
 
     def invalidate_probe_cache(self) -> None:
         self._pkg_cache = None
+        self._venv_verify_cache = None
+        self._device_cache = None
         self._ffmpeg_cache = None
         self._yt_dlp_version_cache = None
+
+    def detect_compute_devices(self) -> list[dict[str, Any]]:
+        """Probe available compute devices inside compute_python() rather than the server process."""
+        cpu_only: list[dict[str, Any]] = [
+            {"id": "cpu", "name": "CPU", "backend": "cpu", "available": True, "unavailable_reason": None}
+        ]
+        py = self.compute_python()
+        if not py:
+            return cpu_only
+        if _is_same_python_env(py):
+            cache_key = f"{py}|self"
+            if self._device_cache and self._device_cache[0] == cache_key:
+                return self._device_cache[1]
+            devices = detect_devices()
+            self._device_cache = (cache_key, devices)
+            return devices
+        installed = self._probe_python_env(py)
+        has_torch = bool(installed.get("torch"))
+        cache_key = f"{py}|torch={has_torch}"
+        if self._device_cache and self._device_cache[0] == cache_key:
+            return self._device_cache[1]
+        if not has_torch:
+            self._device_cache = (cache_key, cpu_only)
+            return cpu_only
+        script = "import json; from backend.app.accelerators import detect_devices; print(json.dumps(detect_devices(), ensure_ascii=False))"
+        try:
+            proc = subprocess.run(
+                [py, "-c", script],
+                env=self.child_process_env(),
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=True,
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            parsed = json.loads(lines[-1]) if lines else None
+            if isinstance(parsed, list) and parsed:
+                self._device_cache = (cache_key, parsed)
+                return parsed
+            detail = "empty device list returned"
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            if isinstance(exc, subprocess.CalledProcessError):
+                detail = (exc.stderr or exc.stdout or str(exc)).strip()[-300:] or str(exc)
+            else:
+                detail = str(exc)
+        return [
+            {
+                "id": "accelerator",
+                "name": "GPU / Accelerator",
+                "backend": "cpu",
+                "available": False,
+                "unavailable_reason": f"Torch 探测失败：{detail}",
+            },
+            *cpu_only,
+        ]
+
+    def _torch_matches_plan(
+        self,
+        installed: dict[str, str | None],
+        plan: dict[str, Any],
+        devices: list[dict[str, Any]],
+    ) -> bool:
+        torch_ver = installed.get("torch")
+        audio_ver = installed.get("torchaudio")
+        if not torch_ver or not audio_ver:
+            return False
+        codec_ver = str(plan.get("codec") or "").strip()
+        installed_codec = installed.get("torchcodec")
+        if codec_ver and installed_codec and installed_codec != codec_ver:
+            return False
+        version = str(plan.get("version") or "")
+        variant = str(plan.get("variant") or "")
+        backend = str(plan.get("backend") or "cpu")
+        selected = next((d for d in devices if d.get("available")), devices[-1])
+        expected_ver = f"{version}+{variant}" if variant else version
+        if torch_ver == expected_ver and audio_ver == expected_ver:
+            return True
+        if backend == "cpu":
+            cpu_versions = {version, f"{version}+cpu"} if version else set()
+            return torch_ver in cpu_versions and audio_ver in cpu_versions
+        if selected.get("backend") == backend:
+            return True
+        return False
+
+    def compute_accelerator_status(self) -> dict[str, Any]:
+        py = self.compute_python()
+        plan = installation_plan(hardware())
+        installed = self._probe_python_env(py) if py else {}
+        torch_ver = installed.get("torch")
+        audio_ver = installed.get("torchaudio")
+        devices = self.detect_compute_devices()
+        selected = next((d for d in devices if d.get("available")), devices[-1])
+        failures = [d["unavailable_reason"] for d in devices if not d.get("available") and d.get("unavailable_reason")]
+        ready = bool(py) and self._torch_matches_plan(installed, plan, devices)
+        if not torch_ver:
+            detail = plan.get("detail") or f"Backend: {plan.get('backend', 'cpu')}"
+        elif not ready:
+            expected_label = str(plan.get("variant") or plan.get("backend") or "cpu").upper()
+            actual_ver = f"torch={torch_ver}, torchaudio={audio_ver or 'missing'}"
+            codec_info = f", torchcodec={installed.get('torchcodec')}" if installed.get("torchcodec") else ""
+            detail = (
+                f"检测到当前环境 ({actual_ver}{codec_info}) 与硬件方案不匹配"
+                f"（需要 {expected_label} {plan.get('version', '')}，当前仅 {selected['backend'].upper()}）；请点击安装以修复"
+            )
+        elif selected["backend"] == "cpu" and failures:
+            detail = "CPU：未启用 GPU 加速；" + "；".join(failures)
+        else:
+            detail = f"Backend: {selected['backend']}"
+        return {
+            "devices": devices,
+            "backend": selected["backend"],
+            "detail": detail,
+            "plan": plan,
+            "installed": ready,
+        }
 
     def _verify_executable(self, binary: str, args: list[str]) -> bool:
         try:
@@ -363,6 +542,142 @@ class ResourceManager:
             return info
         return self.yt_dlp_info()
 
+    def _prefer_china_mirrors(self) -> bool:
+        return self.settings.config.ui_language == "zh" and not self.settings.config.proxy_url.strip()
+
+    def _order_urls(self, urls: list[str]) -> list[str]:
+        unique = list(dict.fromkeys(str(u) for u in urls if u))
+        now = time.monotonic()
+        expired = [h for h, ts in self._failed_hosts.items() if (now - ts) >= _FAILED_HOST_TTL_SECONDS]
+        for h in expired:
+            self._failed_hosts.pop(h, None)
+
+        prefer_china = self._prefer_china_mirrors()
+        china_ok: list[str] = []
+        other_ok: list[str] = []
+        failed: list[str] = []
+        for url in unique:
+            host = (urllib.parse.urlsplit(url).hostname or "").lower()
+            if host in self._failed_hosts:
+                failed.append(url)
+            elif prefer_china and host in _CHINA_MIRROR_HOSTS:
+                china_ok.append(url)
+            else:
+                other_ok.append(url)
+        return [*china_ok, *other_ok, *failed]
+
+    def _pypi_source_candidates(self, variant: str = "") -> list[tuple[str, str | None]]:
+        official = (
+            "https://pypi.org/simple/",
+            f"https://download.pytorch.org/whl/{variant}/" if variant else None,
+        )
+        aliyun = (
+            "https://mirrors.aliyun.com/pypi/simple/",
+            f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/" if variant else None,
+        )
+        tsinghua = (
+            "https://pypi.tuna.tsinghua.edu.cn/simple/",
+            f"https://mirrors.aliyun.com/pytorch-wheels/{variant}/" if variant else None,
+        )
+        if self._prefer_china_mirrors():
+            return [aliyun, tsinghua, official]
+        return [official, aliyun, tsinghua]
+
+    def _pip_env(self, *, index_url: str | None = None) -> dict[str, str]:
+        env = dict(os.environ)
+        env["PIP_CONFIG_FILE"] = "NUL" if sys.platform == "win32" else "/dev/null"
+        env["PIP_EXTRA_INDEX_URL"] = ""
+        env["PIP_FIND_LINKS"] = ""
+        env["PIP_TARGET"] = ""
+        env["PIP_PREFIX"] = ""
+        env["PIP_ROOT"] = ""
+        env["PIP_USER"] = "0"
+        env["UV_NO_CONFIG"] = "1"
+        env["UV_INDEX"] = ""
+        env["UV_EXTRA_INDEX_URL"] = ""
+        env["UV_FIND_LINKS"] = ""
+        env["UV_HTTP_TIMEOUT"] = "20"
+        env["UV_HTTP_RETRIES"] = "1"
+        env["UV_PYTHON_DOWNLOADS"] = "never"
+        env.pop("UV_INDEX_URL", None)
+        data = self._data_root()
+        if data is not None:
+            env["UV_CACHE_DIR"] = str(data / "runtime" / "uv-cache")
+        proxy = self.settings.config.proxy_url.strip()
+        if proxy:
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                env[key] = proxy
+            if env.get("NO_PROXY") == "*":
+                env.pop("NO_PROXY", None)
+            if env.get("no_proxy") == "*":
+                env.pop("no_proxy", None)
+        else:
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                env.pop(key, None)
+        if index_url:
+            env["UV_DEFAULT_INDEX"] = index_url
+            env["PIP_INDEX_URL"] = index_url
+        return env
+
+    async def _probe_http_source(self, url: str) -> bool:
+        proxy = self.settings.config.proxy_url.strip() or None
+        try:
+            async with httpx.AsyncClient(
+                proxy=proxy,
+                follow_redirects=True,
+                timeout=httpx.Timeout(connect=4.0, read=4.0, write=4.0, pool=4.0),
+                trust_env=False,
+                transport=self._transport,
+            ) as client:
+                resp = await client.get(url, headers={"Range": "bytes=0-0"})
+            return resp.status_code < 400
+        except Exception:
+            return False
+
+    async def _run_streaming_command(
+        self,
+        cmd: list[str],
+        env: dict[str, str],
+        state: DownloadProgressState | None,
+    ) -> tuple[int, str]:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        output_lines: list[str] = []
+        if proc.stdout is not None:
+            while raw_line := await proc.stdout.readline():
+                clean = _ANSI_ESCAPE_RE.sub("", raw_line.decode("utf-8", errors="replace")).strip()
+                if not clean:
+                    continue
+                output_lines.append(clean)
+                if state is not None:
+                    _append_state_log(state, clean)
+                    if "Downloading" in clean:
+                        state.phase = "downloading"
+                        state.activity = clean[:300]
+                    elif any(
+                        tok in clean
+                        for tok in (
+                            "Downloaded",
+                            "Prepared",
+                            "Resolved",
+                            "Installing",
+                            "Installed",
+                            "Building",
+                            "Built",
+                            "Using Python",
+                            "error:",
+                        )
+                    ):
+                        state.phase = "installing"
+                        state.activity = clean[:300]
+                    self._emit_updated()
+        returncode = await proc.wait()
+        return returncode, "\n".join(output_lines)
+
     def update_yt_dlp(self) -> dict[str, Any]:
         py = self.compute_python()
         uv = self.find_uv()
@@ -374,15 +689,21 @@ class ResourceManager:
             if uv
             else [py, "-m", "pip", "install", "--upgrade", "yt-dlp"]
         )
-        env = dict(os.environ)
-        proxy = self.settings.config.proxy_url.strip()
-        if proxy:
-            env.setdefault("HTTP_PROXY", proxy)
-            env.setdefault("HTTPS_PROXY", proxy)
+        candidates = [idx for idx, _ in self._pypi_source_candidates()]
+        env = self._pip_env(index_url=candidates[0])
         proc = subprocess.run(cmd_base, capture_output=True, text=True, timeout=180, env=env)
         if proc.returncode != 0:
-            mirror_cmd = [*cmd_base, "--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple"]
-            proc = subprocess.run(mirror_cmd, capture_output=True, text=True, timeout=180, env=env)
+            for mirror_url in candidates[1:]:
+                mirror_cmd = [*cmd_base, "--index-url", mirror_url]
+                proc = subprocess.run(
+                    mirror_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    env=self._pip_env(index_url=mirror_url),
+                )
+                if proc.returncode == 0:
+                    break
         if proc.returncode != 0:
             raise AppError(
                 502,
@@ -544,7 +865,7 @@ class ResourceManager:
         base_missing = [
             dist for dist in self._req_manifest["groups"]["media"]["modules"].values() if not installed.get(dist)
         ] if py else ["media"]
-        accel = accelerator_status()
+        accel = self.compute_accelerator_status()
 
         def step(step_id: str, name: str, ready: bool, detail: str | None = None) -> dict[str, Any]:
             live = self._state.environment.get(step_id)
@@ -556,6 +877,16 @@ class ResourceManager:
                     "detail": live.error or live.detail or detail,
                     "phase": live.phase,
                 }
+                if live.source:
+                    out["source"] = live.source
+                if live.activity:
+                    out["activity"] = live.activity
+                if live.log:
+                    out["log"] = live.log
+                if live.started_at is not None:
+                    out["startedAt"] = live.started_at
+                if live.updated_at is not None:
+                    out["updatedAt"] = live.updated_at
                 if live.total > 0 or live.received > 0:
                     out["progress"] = {"received": live.received, "total": live.total, "speed": live.speed}
                 return out
@@ -578,8 +909,8 @@ class ResourceManager:
             step(
                 "acceleration",
                 "计算加速",
-                bool(py),
-                accel.get("plan", {}).get("detail") or f"Backend: {accel.get('plan', {}).get('backend', 'cpu')}",
+                bool(py) and bool(accel["installed"]),
+                accel["detail"],
             ),
         ]
 
@@ -620,6 +951,7 @@ class ResourceManager:
             "diskBytes": self.model_disk_bytes(base_id, chosen_variant if base_id == "whisper" else None),
             "source": source,
             "error": error,
+            **({"log": live.log} if live and live.log else {}),
         }
 
     def _all_model_dicts(self) -> list[dict[str, Any]]:
@@ -717,11 +1049,15 @@ class ResourceManager:
             return groups
         installed = self._probe_python_env(py)
         missing: list[str] = []
+        needs_accel = any(self._req_manifest["groups"].get(g, {}).get("accelerated") for g in groups)
+        accel_ready = bool(self.compute_accelerator_status()["installed"]) if needs_accel else True
         for g in groups:
             modules = self._req_manifest["groups"].get(g, {}).get("modules", {})
             for dist in modules.values():
                 if not installed.get(dist):
                     missing.append(dist)
+        if needs_accel and not accel_ready and "torch" not in missing:
+            missing.append("torch")
         return sorted(set(missing))
 
     def _requirement_for_selection(self, sel: dict[str, Any]) -> dict[str, Any]:
@@ -814,34 +1150,92 @@ class ResourceManager:
                 actions = ["prepare"]
             elif status == "failed":
                 actions = ["retry"]
-            entries.append(
-                {
-                    "id": step["id"],
-                    "name": step["name"],
-                    "group": "environment",
-                    "status": status,
-                    "phase": step.get("phase"),
-                    "actions": actions,
-                    "dependencies": [],
-                    "detail": step.get("detail"),
-                    "error": step.get("detail") if status == "failed" else None,
-                    **({"progress": step["progress"]} if step.get("progress") else {}),
-                }
-            )
+            entry_dict: dict[str, Any] = {
+                "id": step["id"],
+                "name": step["name"],
+                "group": "environment",
+                "status": status,
+                "phase": step.get("phase"),
+                "actions": actions,
+                "dependencies": [],
+                "detail": step.get("detail"),
+                "error": step.get("detail") if status == "failed" else None,
+            }
+            if step.get("source"):
+                entry_dict["source"] = step["source"]
+            if step.get("activity"):
+                entry_dict["activity"] = step["activity"]
+            if step.get("progress"):
+                entry_dict["progress"] = step["progress"]
+            entries.append(entry_dict)
         # Add yt-dlp entry under environment cleanly
         yt_ver = self.yt_dlp_version()
-        entries.append(
-            {
+        dl_live = self._state.environment.get("youdub.download")
+        deps_live = self._state.environment.get("dependencies")
+        if yt_ver:
+            dl_entry: dict[str, Any] = {
                 "id": "youdub.download",
                 "name": "yt-dlp",
-                "variant": yt_ver or "",
+                "variant": yt_ver,
                 "group": "environment",
-                "status": "ready" if yt_ver else "pending",
-                "actions": [] if yt_ver else ["prepare"],
+                "status": "ready",
+                "actions": [],
                 "dependencies": ["python"],
-                "detail": f"yt-dlp {yt_ver}" if yt_ver else "yt-dlp not installed in compute runtime.",
+                "detail": f"yt-dlp {yt_ver}",
             }
-        )
+        elif dl_live and dl_live.status == "running":
+            dl_entry = {
+                "id": "youdub.download",
+                "name": "yt-dlp",
+                "variant": "",
+                "group": "environment",
+                "status": "preparing",
+                "phase": dl_live.phase or "installing",
+                "actions": [],
+                "dependencies": ["python"],
+                "detail": dl_live.activity or dl_live.detail or "Installing yt-dlp...",
+                **({"source": dl_live.source} if dl_live.source else {}),
+                **({"activity": dl_live.activity} if dl_live.activity else {}),
+            }
+        elif dl_live and dl_live.status == "failed":
+            dl_entry = {
+                "id": "youdub.download",
+                "name": "yt-dlp",
+                "variant": "",
+                "group": "environment",
+                "status": "failed",
+                "actions": ["retry"],
+                "dependencies": ["python"],
+                "detail": dl_live.error or "yt-dlp installation failed.",
+                "error": dl_live.error or "yt-dlp installation failed.",
+                **({"source": dl_live.source} if dl_live.source else {}),
+            }
+        elif deps_live and deps_live.status == "running":
+            dl_entry = {
+                "id": "youdub.download",
+                "name": "yt-dlp",
+                "variant": "",
+                "group": "environment",
+                "status": "preparing",
+                "phase": deps_live.phase or "installing",
+                "actions": [],
+                "dependencies": ["python"],
+                "detail": deps_live.activity or deps_live.detail or "Installing yt-dlp...",
+                **({"source": deps_live.source} if deps_live.source else {}),
+                **({"activity": deps_live.activity} if deps_live.activity else {}),
+            }
+        else:
+            dl_entry = {
+                "id": "youdub.download",
+                "name": "yt-dlp",
+                "variant": "",
+                "group": "environment",
+                "status": "pending",
+                "actions": ["prepare"],
+                "dependencies": ["python"],
+                "detail": "yt-dlp not installed in compute runtime.",
+            }
+        entries.append(dl_entry)
         for model in models:
             status = model["status"]
             if status == "downloading":
@@ -1019,6 +1413,10 @@ class ResourceManager:
                     targets.append(str(req["downloadId"]))
                 elif req.get("resourceId"):
                     targets.append(str(req["resourceId"]))
+                if req.get("missingPackages") and "dependencies" not in targets:
+                    targets.append("dependencies")
+                if req.get("providerId") == "youdub.download" and "youdub.download" not in targets:
+                    targets.append("youdub.download")
         else:
             targets.extend(["python", "ffmpeg", "dependencies", "whisper:large-v3-turbo", "voxcpm", "demucs", "qwen"])
         return targets
@@ -1062,11 +1460,19 @@ class ResourceManager:
             self._emit_updated(force=True)
             return self.inventory()
         if action in {"resume", "retry"}:
-            targets = [resource_id] if resource_id else list(self._state.models.keys()) or None
+            if resource_id:
+                targets: list[str] | None = [resource_id]
+            else:
+                failed_env = [k for k, st in self._state.environment.items() if st.status == "failed"]
+                combined = [*failed_env, *list(self._state.models.keys())]
+                targets = combined or None
             for key in list(self._state.models.keys()):
                 if resource_id is None or key == resource_id or key.startswith(f"{resource_id}:"):
                     self._state.models[key].pause_requested = False
                     self._state.models[key].error = None
+            for key in list(self._state.environment.keys()):
+                if resource_id is None or key == resource_id:
+                    self._state.environment[key].error = None
             return self.start_prepare(resource_ids=targets)
         if action == "delete":
             if not resource_id:
@@ -1096,11 +1502,12 @@ class ResourceManager:
                 targets = queue
                 queue = []
                 # 1. Ensure Python venv + FFmpeg + Python packages if requested or missing
-                need_env = any(t in {"python", "ffmpeg", "dependencies", "youdub.download", "youdub.media"} for t in targets) or any(
-                    not t.startswith("whisper") and t not in {"voxcpm", "demucs", "qwen"} for t in targets
-                )
+                need_env = any(
+                    t in {"python", "ffmpeg", "dependencies", "acceleration", "youdub.download", "youdub.media"}
+                    for t in targets
+                ) or any(not t.startswith("whisper") and t not in {"voxcpm", "demucs", "qwen"} for t in targets)
                 if need_env or self.resolve_ffmpeg() == (None, None) or self.compute_python() is None:
-                    await self._prepare_environment()
+                    await self._prepare_environment(targets)
 
                 # 2. Download requested model weights
                 model_targets = [
@@ -1127,7 +1534,7 @@ class ResourceManager:
             self._pending_targets.clear()
             self._emit_updated(force=True)
 
-    async def _prepare_environment(self) -> None:
+    async def _prepare_environment(self, targets: list[str] | None = None) -> None:
         data = self._data_root()
         assert data is not None
         # Check FFmpeg
@@ -1136,11 +1543,18 @@ class ResourceManager:
             st = self._state.environment.setdefault("ffmpeg", DownloadProgressState())
             st.status = "running"
             st.phase = "downloading"
+            st.error = None
+            st.detail = None
+            st.activity = None
+            st.log = ""
+            st.source = None
+            st.started_at = int(time.time() * 1000)
             self._emit_updated(force=True)
             try:
                 await self._install_ffmpeg(data / "runtime" / "ffmpeg", st)
                 st.status = "ready"
                 st.phase = None
+                st.activity = None
             except Exception as exc:
                 st.status = "failed"
                 st.error = str(exc)
@@ -1153,6 +1567,12 @@ class ResourceManager:
             st = self._state.environment.setdefault("python", DownloadProgressState())
             st.status = "running"
             st.phase = "installing"
+            st.error = None
+            st.detail = None
+            st.activity = None
+            st.log = ""
+            st.source = None
+            st.started_at = int(time.time() * 1000)
             self._emit_updated(force=True)
             try:
                 uv = self.find_uv()
@@ -1160,15 +1580,19 @@ class ResourceManager:
                     raise RuntimeError("uv executable not found; install uv or bundled desktop runtime.")
                 venv_dir = data / "runtime" / "venv"
                 py_seed = sys.executable if sys.version_info[:2] == (3, 12) else "3.12"
-                proc = await asyncio.create_subprocess_exec(
-                    uv, "venv", "--python", py_seed, str(venv_dir),
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                rc, out = await self._run_streaming_command(
+                    [uv, "venv", "--clear", "--python", py_seed, str(venv_dir)],
+                    self._pip_env(),
+                    st,
                 )
-                _, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    raise RuntimeError(f"uv venv failed: {stderr.decode(errors='replace')}")
+                if rc != 0:
+                    raise RuntimeError(f"uv venv failed: {out[-600:]}")
+                self.invalidate_probe_cache()
+                if self.compute_python() is None:
+                    raise RuntimeError("Created Python venv is not executable.")
                 st.status = "ready"
                 st.phase = None
+                st.activity = None
             except Exception as exc:
                 st.status = "failed"
                 st.error = str(exc)
@@ -1179,21 +1603,68 @@ class ResourceManager:
         # Check missing packages in compute python
         py = self.compute_python()
         if py:
-            missing = []
-            for group in ("base", "media", "download", "whisper", "demucs", "voxcpm", "qwen_forced_aligner"):
+            if targets == ["youdub.download"]:
+                step_key = "youdub.download"
+                candidate_groups: tuple[str, ...] = ("media", "download")
+            elif targets == ["acceleration"]:
+                step_key = "acceleration"
+                candidate_groups = ("acceleration",)
+            else:
+                step_key = "dependencies"
+                candidate_groups = (
+                    "acceleration",
+                    "base",
+                    "media",
+                    "download",
+                    "whisper",
+                    "demucs",
+                    "voxcpm",
+                    "qwen_forced_aligner",
+                )
+            installed = self._probe_python_env(py)
+            accel_ready = self.compute_accelerator_status()["installed"] if "acceleration" in candidate_groups else True
+            missing: list[str] = []
+            for group in candidate_groups:
+                if group == "acceleration":
+                    if not accel_ready:
+                        missing.append(group)
+                    continue
                 for dist in self._req_manifest["groups"][group]["modules"].values():
-                    if not self._probe_python_env(py).get(dist):
+                    if not installed.get(dist):
                         missing.append(group)
                         break
             if missing:
-                st = self._state.environment.setdefault("dependencies", DownloadProgressState())
+                st = self._state.environment.setdefault(step_key, DownloadProgressState())
                 st.status = "running"
                 st.phase = "installing"
+                st.error = None
+                st.detail = None
+                st.activity = None
+                st.log = ""
+                st.source = None
+                st.started_at = int(time.time() * 1000)
                 self._emit_updated(force=True)
                 try:
-                    await self._install_python_dependencies(py, missing)
+                    await self._install_python_dependencies(py, missing, st)
+                    self.invalidate_probe_cache()
+                    after = self._probe_python_env(py)
+                    still_missing = sorted(
+                        {
+                            dist
+                            for group in missing
+                            for dist in self._req_manifest["groups"][group]["modules"].values()
+                            if not after.get(dist)
+                        }
+                    )
+                    if still_missing:
+                        raise RuntimeError(f"Dependencies still missing after install: {', '.join(still_missing)}")
+                    if "acceleration" in missing:
+                        accel_after = self.compute_accelerator_status()
+                        if not accel_after["installed"]:
+                            raise RuntimeError(accel_after["detail"] or "PyTorch acceleration still mismatched after install.")
                     st.status = "ready"
                     st.phase = None
+                    st.activity = None
                 except Exception as exc:
                     st.status = "failed"
                     st.error = str(exc)
@@ -1207,54 +1678,126 @@ class ResourceManager:
         if not assets:
             raise RuntimeError(f"No pinned FFmpeg build for platform {plat}")
         target_dir.mkdir(parents=True, exist_ok=True)
-        for asset in assets:
-            if plat == "win32-x64":
+        if plat == "win32-x64":
+            url_order = self._order_urls([str(a["url"]) for a in assets if a.get("url")])
+            ordered_assets = sorted(
+                assets,
+                key=lambda a: url_order.index(str(a["url"])) if str(a.get("url")) in url_order else len(url_order),
+            )
+            last_exc: Exception | None = None
+            for asset in ordered_assets:
                 archive = target_dir / asset["path"]
-                await self._download_asset_with_mirrors(asset, archive, state)
-                if archive.suffix == ".zip":
-                    with zipfile.ZipFile(archive) as zf:
-                        zf.extractall(target_dir)
-                else:
-                    with tarfile.open(archive) as tf:
-                        tf.extractall(target_dir)
-                break
+                try:
+                    await self._download_asset_with_mirrors(asset, archive, state)
+                    if archive.suffix == ".zip":
+                        with zipfile.ZipFile(archive) as zf:
+                            zf.extractall(target_dir)
+                    else:
+                        with tarfile.open(archive) as tf:
+                            tf.extractall(target_dir, filter="data")
+                    has_ff = any(target_dir.rglob("ffmpeg.exe"))
+                    has_fp = any(target_dir.rglob("ffprobe.exe"))
+                    if not (has_ff and has_fp):
+                        raise RuntimeError(f"Extracted FFmpeg archive {archive.name} is missing binaries.")
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    _append_state_log(state, f"FFmpeg 下载/解压失败 ({asset['path']}): {exc}")
+                    archive.unlink(missing_ok=True)
+                    continue
+            raise RuntimeError(f"All FFmpeg archives failed for {plat}: {last_exc}")
+
+        for asset in assets:
             dest = target_dir / ("ffmpeg" if "ffmpeg" in asset["path"] else "ffprobe")
             await self._download_asset_with_mirrors(asset, dest, state)
             if os.name == "posix":
                 dest.chmod(stat.S_IRWXU)
 
-    async def _install_python_dependencies(self, python_exec: str, groups: list[str]) -> None:
+    async def _install_python_dependencies(
+        self,
+        python_exec: str,
+        groups: list[str],
+        state: DownloadProgressState | None = None,
+    ) -> None:
         uv = self.find_uv()
-        req_files = [str(REQUIREMENTS_DIR / f"{g}.txt") for g in groups if (REQUIREMENTS_DIR / f"{g}.txt").is_file()]
-        args: list[str] = []
-        for rf in req_files:
-            args.extend(["-r", rf])
         plan = installation_plan(hardware())
-        extra_args: list[str] = []
-        if plan.get("findLinks"):
-            extra_args.extend(["--find-links", str(plan["findLinks"])])
-        cmd = (
-            [uv, "pip", "install", "--python", python_exec, *args, *extra_args]
-            if uv
-            else [python_exec, "-m", "pip", "install", *args, *extra_args]
+        need_accel = "acceleration" in groups or any(
+            self._req_manifest["groups"].get(g, {}).get("accelerated") for g in groups
         )
-        env = dict(os.environ)
-        proxy = self.settings.config.proxy_url.strip()
-        if proxy:
-            env.setdefault("HTTP_PROXY", proxy)
-            env.setdefault("HTTPS_PROXY", proxy)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            mirror_cmd = [*cmd, "--index-url", "https://pypi.tuna.tsinghua.edu.cn/simple"]
-            proc = await asyncio.create_subprocess_exec(
-                *mirror_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
-            )
-            _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(f"Dependency install failed: {stderr.decode(errors='replace')[-600:]}")
+
+        async def _install_args(pkg_args: list[str], *, variant: str = "") -> None:
+            candidates = self._pypi_source_candidates(variant)
+            probed_ok: list[tuple[str, str | None]] = []
+            if len(candidates) > 1:
+                for index_url, wheels_url in candidates:
+                    idx_ok = await self._probe_http_source(f"{index_url.rstrip('/')}/packaging/")
+                    whl_ok = True if (not idx_ok or not wheels_url) else await self._probe_http_source(wheels_url)
+                    if idx_ok and whl_ok:
+                        probed_ok.append((index_url, wheels_url))
+                    elif state is not None:
+                        _append_state_log(state, f"软件源连通性测试未通过，跳过：{index_url}")
+            active_candidates = probed_ok or candidates
+
+            last_output = ""
+            last_rc = 1
+            for index_url, wheels_url in active_candidates:
+                host = urllib.parse.urlsplit(index_url).hostname or index_url
+                if state is not None:
+                    state.source = host
+                    _append_state_log(state, f"使用软件源：{index_url}" + (f" · {wheels_url}" if wheels_url else ""))
+                    self._emit_updated(force=True)
+                extra_flags: list[str] = ["--index-url", index_url]
+                if wheels_url:
+                    extra_flags.extend(["--find-links", wheels_url])
+                cmd = (
+                    [uv, "pip", "install", "--python", python_exec, "--color", "never", *extra_flags, *pkg_args]
+                    if uv
+                    else [python_exec, "-m", "pip", "install", "--no-color", "--disable-pip-version-check", *extra_flags, *pkg_args]
+                )
+                rc, output = await self._run_streaming_command(cmd, self._pip_env(index_url=index_url), state)
+                if rc == 0:
+                    return
+                last_rc = rc
+                last_output = output
+                if state is not None:
+                    _append_state_log(state, f"软件源安装失败 ({host}, exit={rc})")
+            raise RuntimeError(f"Dependency install failed (exit={last_rc}): {last_output[-600:]}")
+
+        wheels_variant = str(plan.get("variant") or "") if plan.get("findLinks") else ""
+        if need_accel:
+            installed = self._probe_python_env(python_exec)
+            accel_ready = self._torch_matches_plan(installed, plan, self.detect_compute_devices())
+            codec_ver = str(plan.get("codec") or "").strip()
+            codec_mismatch = bool(codec_ver and installed.get("torchcodec") and installed.get("torchcodec") != codec_ver)
+            if "acceleration" in groups or not accel_ready or codec_mismatch:
+                if plan.get("prerequisites"):
+                    await _install_args(list(plan["prerequisites"]))
+                if plan.get("packages"):
+                    extra_codec = [f"torchcodec=={codec_ver}"] if codec_mismatch else []
+                    await _install_args([*list(plan["packages"]), *extra_codec])
+                else:
+                    suffix = f"+{plan['variant']}" if plan.get("variant") else ""
+                    torch_pkgs = [f"torch=={plan['version']}{suffix}", f"torchaudio=={plan['version']}{suffix}"]
+                    if codec_mismatch:
+                        torch_pkgs.append(f"torchcodec=={codec_ver}")
+                    await _install_args(torch_pkgs, variant=wheels_variant)
+
+        req_groups = [g for g in groups if g != "acceleration"]
+        req_files = [str(REQUIREMENTS_DIR / f"{g}.txt") for g in req_groups if (REQUIREMENTS_DIR / f"{g}.txt").is_file()]
+        if req_files:
+            req_args: list[str] = []
+            data = self._data_root()
+            if need_accel and data is not None:
+                constraints_path = data / "runtime" / "torch-constraints.txt"
+                constraints_path.parent.mkdir(parents=True, exist_ok=True)
+                constraints_path.write_text(
+                    f"torch=={plan['version']}\ntorchaudio=={plan['version']}\ntorchcodec=={plan['codec']}\n",
+                    encoding="utf-8",
+                )
+                req_args.extend(["-c", str(constraints_path)])
+            for rf in req_files:
+                req_args.extend(["-r", rf])
+            await _install_args(req_args, variant=wheels_variant if need_accel else "")
 
     async def _download_model(self, download_id: str) -> None:
         spec, variant, files = self._model_spec(download_id)
@@ -1268,7 +1811,11 @@ class ResourceManager:
         state.status = "downloading"
         state.phase = "downloading"
         state.error = None
+        state.activity = None
+        state.log = ""
+        state.source = None
         state.pause_requested = False
+        state.started_at = int(time.time() * 1000)
         self._emit_updated(force=True)
 
         cumulative_done = 0
@@ -1311,7 +1858,7 @@ class ResourceManager:
         *,
         base_received: int = 0,
     ) -> None:
-        urls = [str(asset["url"]), *(str(m) for m in asset.get("mirrors", []))]
+        urls = self._order_urls([str(asset["url"]), *(str(m) for m in asset.get("mirrors", []))])
         expected_sha = str(asset.get("sha256") or "")
         part_path = dest.with_name(dest.name + ".part")
         part_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1321,6 +1868,8 @@ class ResourceManager:
         for candidate_url in urls:
             host = urllib.parse.urlsplit(candidate_url).hostname or candidate_url
             state.source = host
+            _append_state_log(state, f"连接下载源：{host} · {dest.name}")
+            self._emit_updated(force=True)
             for reset_range in (False, True):
                 if reset_range:
                     part_path.unlink(missing_ok=True)
@@ -1330,7 +1879,7 @@ class ResourceManager:
                     async with httpx.AsyncClient(
                         proxy=proxy,
                         follow_redirects=True,
-                        timeout=httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=15.0),
+                        timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
                         trust_env=False,
                         transport=self._transport,
                     ) as client:
@@ -1382,6 +1931,8 @@ class ResourceManager:
                     raise
                 except Exception as exc:
                     last_exc = exc
+                    self._failed_hosts[host.lower()] = time.monotonic()
+                    _append_state_log(state, f"下载源失败：{host} · {dest.name} ({exc})")
                     break
         raise RuntimeError(f"All download sources failed for {dest.name}: {last_exc}")
 

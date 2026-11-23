@@ -6,7 +6,6 @@ import copy
 from collections import deque
 from typing import Any
 
-from ..accelerators import detect_devices
 from .resources import ResourceManager
 from .settings import LLMProviderConfig, SettingsStore
 
@@ -20,16 +19,16 @@ def _lt(default: str, *, zh: str, ja: str) -> dict[str, Any]:
     return {"default": default, "translations": {"zh": zh, "ja": ja}}
 
 
-def _resolve_model_devices(*, allow_mps: bool) -> list[str]:
-    devices = detect_devices()
+def _resolve_model_devices(resources: ResourceManager, *, allow_mps: bool) -> list[str]:
+    devices = resources.detect_compute_devices()
     out = [d["id"] for d in devices if d.get("available") and (allow_mps or d["id"] != "mps")]
     return out or ["cpu"]
 
 
 def build_node_types(settings: SettingsStore, resources: ResourceManager) -> list[dict[str, Any]]:
     """Return every built-in NodeTypeDefinition for the DAG canvas and validator."""
-    local_devices = _resolve_model_devices(allow_mps=True)
-    whisper_devices = _resolve_model_devices(allow_mps=False)
+    local_devices = _resolve_model_devices(resources, allow_mps=True)
+    whisper_devices = _resolve_model_devices(resources, allow_mps=False)
     installed_whisper = set(resources.installed_whisper_variants())
     voxcpm_ready = resources.is_model_ready("voxcpm")
     demucs_ready = resources.is_model_ready("demucs")

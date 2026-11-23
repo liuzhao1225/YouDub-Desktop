@@ -119,12 +119,35 @@ def run(context: StageContext, progress: Callable[[float | None, str], None], *,
              for index, segment in enumerate(transcript.segments, start=1)]
     request_path = output_dir / "request.json"
     request_path.write_text(json.dumps({"clips": clips}, ensure_ascii=False, indent=2), encoding="utf-8")
-    progress(None, "Generating translated speech with VoxCPM2")
+    total_clips = len(clips)
+    progress(0.0, f"Loading VoxCPM2 on {selection.device} ({total_clips} clips)")
+
+    def _on_tts_stdout(line: str) -> None:
+        text = line.strip()
+        if not text.startswith("{"):
+            return
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return
+        if not isinstance(payload, dict):
+            return
+        event = payload.get("event")
+        if event == "loaded":
+            device = payload.get("device") or selection.device
+            progress(0.05, f"VoxCPM2 ready on {device}; generating 0/{total_clips} clips")
+        elif event == "clip":
+            done = int(payload.get("done") or 0)
+            total = max(int(payload.get("total") or total_clips), 1)
+            frac = 0.05 + 0.9 * min(max(done / total, 0.0), 1.0)
+            progress(frac, f"Generating speech with VoxCPM2 ({done}/{total} clips)")
+
     result = _run_media(
         [sys.executable, str(Path(__file__).with_name("tts_process.py")),
          "--model-path", str(model_directory().resolve()), "--request-path", str(request_path.resolve()),
          "--device", selection.device],
         check_cancel=context.check_cancel,
+        on_stdout_line=_on_tts_stdout,
     )
     if result.returncode != 0:
         try:

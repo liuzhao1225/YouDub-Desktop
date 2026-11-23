@@ -85,12 +85,20 @@ const WHISPER_DESC_KEYS: Record<string, MessageKey> = {
 
 type TranslateFn = ReturnType<typeof useText>
 
+const ENV_DISPLAY_NAMES: Record<string, MessageKey> = {
+  acceleration: 'resource.inference',
+  dependencies: 'resource.pythonDeps',
+  'youdub.download': 'resource.videoDownload',
+}
+
 function formatEnvironmentSubtitle(
   entry: ResourceEntry,
   ytDlp: YtDlpInfo | undefined,
   tx: TranslateFn,
 ): string | undefined {
   if (entry.id === 'youdub.download') {
+    if (entry.status === 'preparing') return entry.activity || entry.detail
+    if (entry.status === 'failed') return undefined
     const version = ytDlp?.version || entry.variant
     if (!version) return tx('settings.resources.ytdlp.notInstalled')
     if (ytDlp?.updateAvailable && ytDlp.latestVersion) {
@@ -385,7 +393,7 @@ export function SettingsResources({ request, title, events, onOpenSettings, onNa
   const hasDownloadEntry = environmentEntries.some((entry) => entry.id === 'youdub.download')
   const showEnvironment = Boolean(inspection) && (environmentEntries.length > 0 || Boolean(inventory?.ytDlp))
 
-  const coreEnvIds = ['python', 'ffmpeg', 'dependencies']
+  const coreEnvIds = ['python', 'ffmpeg', 'dependencies', 'acceleration']
   const coreEnvEntries = environmentEntries.filter((entry) => coreEnvIds.includes(entry.id))
   const coreEnvMissingIds = coreEnvEntries.filter((entry) => entry.status !== 'ready').map((entry) => entry.id)
   const coreEnvReady = coreEnvMissingIds.length === 0
@@ -432,6 +440,10 @@ export function SettingsResources({ request, title, events, onOpenSettings, onNa
   const dubbingMissingBytes = targetWhisperMissingBytes + sumMissingBytes(missingOtherModels)
 
   const activeTransfer = findActiveTransfer(effectiveModelEntries, whisperVariants)
+  const activeEnvEntry = !activeTransfer && preparing ? environmentEntries.find((e) => e.status === 'preparing') : undefined
+  const activeEnvName = activeEnvEntry
+    ? (ENV_DISPLAY_NAMES[activeEnvEntry.id] ? tx(ENV_DISPLAY_NAMES[activeEnvEntry.id]) : activeEnvEntry.name)
+    : ''
   const storage = inspection?.storage ?? inventory?.storage
   const llmReady = inspection?.llmReady ?? inventory?.llmReady
   const envReadyCount = environmentEntries.filter((entry) => entry.status === 'ready').length
@@ -521,9 +533,16 @@ export function SettingsResources({ request, title, events, onOpenSettings, onNa
                             : 'settings.resources.transfer.active',
                           { name: activeTransfer.label },
                         )
-                      : tx('settings.resources.transfer.preparingGeneric')}
+                      : activeEnvEntry
+                        ? tx('settings.resources.transfer.active', { name: activeEnvName })
+                        : tx('settings.resources.transfer.preparingGeneric')}
                   </span>
                 </div>
+                {!activeTransfer && activeEnvEntry && (activeEnvEntry.source || activeEnvEntry.activity) && (
+                  <span className="ml-auto max-w-full truncate text-xs text-muted-foreground">
+                    {[activeEnvEntry.source, activeEnvEntry.activity].filter(Boolean).join(' · ')}
+                  </span>
+                )}
                 {activeTransfer && (
                   <div className="ml-auto flex items-center gap-3">
                     <span className="text-xs tabular-nums text-muted-foreground">

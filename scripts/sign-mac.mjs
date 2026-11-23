@@ -55,9 +55,13 @@ try {
   run('security', ['list-keychains', '-d', 'user', '-s', ...originalKeychains, keychain], true)
   run('security', ['find-identity', '-v', '-p', 'codesigning', keychain])
   const sign = file => run('codesign', ['--force', '--options', 'runtime', '--timestamp', '--keychain', keychain, '--sign', secrets.CODESIGN_IDENTITY, file])
+  const pythonEntitlements = join(root, 'apps/desktop/python-entitlements.plist')
   if (!process.argv.includes('--package-signed')) {
     await signElectron({ app, platform: 'darwin', identity: secrets.CODESIGN_IDENTITY, keychain,
-      optionsForFile: () => ({ hardenedRuntime: true }),
+      optionsForFile: (filePath) =>
+        filePath.replaceAll('\\', '/').includes('/Contents/Resources/python/')
+          ? { hardenedRuntime: true, entitlements: pythonEntitlements }
+          : { hardenedRuntime: true },
     })
   }
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app])

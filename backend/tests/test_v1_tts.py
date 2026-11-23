@@ -416,3 +416,81 @@ def test_child_invalid_model_output_is_not_retried(context, monkeypatch, capsys,
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["code"] == "INVALID_PROVIDER_RESULT"
     assert len(calls) == 1
     assert not any(Path(clip["output_path"]).exists() for clip in clips)
+
+
+def test_child_streams_device_and_clip_progress_events(context, monkeypatch, capsys):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+    monkeypatch.setitem(
+        sys.modules,
+        "voxcpm",
+        SimpleNamespace(
+            VoxCPM=SimpleNamespace(
+                from_pretrained=lambda *args, **kwargs: SimpleNamespace(
+                    tts_model=SimpleNamespace(sample_rate=48000, device="cuda:0"),
+                    generate=lambda **g_kwargs: np.full(4800, 0.1),
+                )
+            )
+        ),
+    )
+    _clips, arguments = child_request(context)
+    assert tts_process.main(arguments) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert lines[0] == {"event": "loaded", "device": "cuda:0", "total": 2}
+    assert lines[1]["event"] == "clip" and lines[1]["done"] == 1 and lines[1]["total"] == 2
+    assert lines[2]["event"] == "clip" and lines[2]["done"] == 2 and lines[2]["total"] == 2
+
+
+def test_run_media_streams_stdout_lines_and_tts_reports_progress(context, monkeypatch):
+    seen_lines: list[str] = []
+    proc = media._run_media(
+        [
+            sys.executable,
+            "-c",
+            'import sys; print(\'{"event":"loaded","device":"cuda:0","total":2}\', flush=True); print(\'{"event":"clip","done":1,"total":2}\', flush=True)',
+        ],
+        check_cancel=lambda: None,
+        on_stdout_line=seen_lines.append,
+    )
+    assert proc.returncode == 0
+    assert len(seen_lines) == 2
+
+    # Verify cancellation terminates and reaps the child when streaming stdout lines
+    cancel_calls = 0
+
+    def cancel_after_start():
+        nonlocal cancel_calls
+        cancel_calls += 1
+        if cancel_calls >= 3:
+            raise OperationCancelledError("CANCELLED", "Stopped while streaming.")
+
+    with pytest.raises(OperationCancelledError):
+        media._run_media(
+            [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)"],
+            check_cancel=cancel_after_start,
+            on_stdout_line=lambda _line: None,
+        )
+
+    updates: list[tuple[float | None, str]] = []
+
+    def fake_run_media(command, **kwargs):
+        request_path = Path(command[command.index("--request-path") + 1])
+        clips = json.loads(request_path.read_text())["clips"]
+        for clip in clips:
+            sf.write(clip["output_path"], np.full(6000, 0.1), 24000, subtype="PCM_16")
+        on_line = kwargs["on_stdout_line"]
+        on_line('{"event": "loaded", "device": "cuda:0", "total": 2}')
+        on_line('{"event": "clip", "done": 1, "total": 2, "segment_id": "segment-000001"}')
+        on_line('{"event": "clip", "done": 2, "total": 2, "segment_id": "segment-000002"}')
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(media, "_run_media", fake_run_media)
+    transcript = Transcript.model_validate_json(context.input_files["transcript"].read_text())
+    prepared = {segment.id: {"path": context.input_files["vocals"], "text": segment.text} for segment in transcript.segments}
+    monkeypatch.setattr(tts, "available_models", lambda: ["VoxCPM2"])
+    tts.run(context, lambda value, msg: updates.append((value, msg)), prepared_references=prepared)
+    assert any("Loading VoxCPM2 on" in msg for _, msg in updates)
+    assert any("VoxCPM2 ready on cuda:0" in msg for _, msg in updates)
+    assert any("(1/2 clips)" in msg for _, msg in updates)
+    assert any("(2/2 clips)" in msg for _, msg in updates)
+    assert updates[-1][0] == 1.0

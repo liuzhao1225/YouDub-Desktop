@@ -357,9 +357,8 @@ def create_app(
 
     @app.get("/api/runtime")
     async def get_runtime() -> dict[str, Any]:
-        from ..accelerators import detect_devices
         return {
-            "devices": detect_devices(),
+            "devices": resources.detect_compute_devices(),
             "whisperVariants": resources._whisper_variants_payload(),
             "ytDlp": {"version": resources.yt_dlp_version()},
         }

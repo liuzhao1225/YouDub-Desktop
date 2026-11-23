@@ -10,11 +10,11 @@
       "large-v3-turbo": [
         {
           "path": "large-v3-turbo.pt",
-          "size": 1618873216,
+          "size": 1617941637,
           "sha256": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
           "url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
           "mirrors": [
-            "https://hf-mirror.com/openai/whisper-large-v3-turbo/resolve/main/original-model.bin"
+            "https://modelscope.cn/api/v1/models/pengzhendong/whisper/repo?Revision=8bdb316a6a3c3ebe3f37cf990aadb09d9b7cddbe&FilePath=large-v3-turbo.pt"
           ]
         }
       ],
@@ -66,11 +66,11 @@
     "files": [
       {
         "path": "large-v3-turbo.pt",
-        "size": 1618873216,
+        "size": 1617941637,
         "sha256": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
         "url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
         "mirrors": [
-          "https://hf-mirror.com/openai/whisper-large-v3-turbo/resolve/main/original-model.bin"
+          "https://modelscope.cn/api/v1/models/pengzhendong/whisper/repo?Revision=8bdb316a6a3c3ebe3f37cf990aadb09d9b7cddbe&FilePath=large-v3-turbo.pt"
         ]
       }
     ]
