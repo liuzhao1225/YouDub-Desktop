@@ -14,7 +14,7 @@ describe('setup diagnostic reports', () => {
   it('prefills general feedback with current app information and excludes private configuration and URL parameters', () => {
     const info = { version: '0.0.7', platform: 'darwin', arch: 'arm64', osVersion: '25.0.0', page: '/workflows/example?token=private-query#private-fragment', language: 'zh', theme: 'system', userAgent: 'YouDub Electron/44.7.0', token: 'private-token', apiKey: 'private-key', homeDir: '/Users/private-name' }
     const url = new URL(feedbackIssue(info).url), body = url.searchParams.get('body')!
-    expect(url.pathname).toBe('/liuzhao1225/YouDub-webui/issues/new')
+    expect(url.pathname).toBe('/liuzhao1225/YouDub-Desktop/issues/new')
     expect(url.searchParams.get('template')).toBe('bug-report.md')
     expect(url.searchParams.get('title')).toBe('[问题反馈] ')
     for (const value of ['YouDub: 0.0.7', 'macOS / 25.0.0', '架构: arm64', '页面: /workflows/example', '语言: zh', '主题: 自动（跟随系统）', 'Electron/44.7.0', '### 复现步骤', '### 预期结果', '### 实际结果']) expect(body).toContain(value)
@@ -38,7 +38,7 @@ describe('setup diagnostic reports', () => {
     for (const text of ['0.0.6', 'win32 x64 / 10.0.26100', '运行依赖', '阿里 PyPI', state.error!, 'No matching distribution', 'Qwen3 Aligner', '12/100 bytes', 'HTTP 503']) expect(report).toContain(text)
     const issue = setupIssue(report, state)
     const url = new URL(issue.url)
-    expect(url.origin + url.pathname).toBe('https://github.com/liuzhao1225/YouDub-webui/issues/new')
+    expect(url.origin + url.pathname).toBe('https://github.com/liuzhao1225/YouDub-Desktop/issues/new')
     expect(url.searchParams.get('template')).toBe('setup-problem.md')
     expect(url.searchParams.get('title')).toBe('[环境配置] 准备失败')
     expect(url.searchParams.get('body')).toContain('YouDub: 0.0.6')

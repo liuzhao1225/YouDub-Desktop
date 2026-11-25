@@ -62,7 +62,7 @@ function codeBlock(text: string) {
 const issueIntro = '### 问题描述\n\n请描述遇到的问题。\n\n### 复现步骤\n\n1. \n2. \n\n### 预期结果\n\n\n\n### 实际结果\n\n\n\n### 基础信息\n\n'
 const issueLogs = '### 日志或截图（可选）\n\n请补充相关日志或截图，并移除 API Key、Token、密码等敏感信息。'
 function newIssue(template: 'setup-problem.md' | 'bug-report.md', title: string, body: string) {
-  return { url: `https://github.com/liuzhao1225/YouDub-webui/issues/new?${new URLSearchParams({ template, title, body })}` }
+  return { url: `https://github.com/liuzhao1225/YouDub-Desktop/issues/new?${new URLSearchParams({ template, title, body })}` }
 }
 
 export interface FeedbackInfo {

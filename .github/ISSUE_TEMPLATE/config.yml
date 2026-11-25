@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 下载最新版本（Releases）
+    url: https://github.com/liuzhao1225/YouDub-Desktop/releases/latest
+    about: 反馈问题前建议先确认已更新到最新版本

@@ -2,7 +2,7 @@
 name: 问题反馈
 about: 反馈界面、任务、工作流或使用过程中的问题
 title: "[问题反馈] "
-labels: ''
+labels: bug
 assignees: ''
 ---
 

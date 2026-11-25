@@ -60,11 +60,11 @@ it('renders the 4 core routes without Extensions, persists collapse, cycles them
 
   expect(screen.getByRole('link', { name: '问题反馈' })).toHaveAttribute(
     'href',
-    'https://github.com/liuzhao1225/YouDub-webui/issues',
+    'https://github.com/liuzhao1225/YouDub-Desktop/issues',
   )
   expect(screen.getByRole('link', { name: 'GitHub' })).toHaveAttribute(
     'href',
-    'https://github.com/liuzhao1225/YouDub-webui',
+    'https://github.com/liuzhao1225/YouDub-Desktop',
   )
 
   const user = userEvent.setup()

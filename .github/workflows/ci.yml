@@ -82,6 +82,7 @@ jobs:
           npm --prefix apps/desktop run test
           npm --prefix apps/desktop run build
           node --test scripts/download-releases.test.mjs
+          node --test .github/scripts/issue-triage.test.mjs
 
   package-macos:
     name: Package macOS candidate

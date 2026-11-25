@@ -29,8 +29,8 @@ export interface SidebarProps {
   onNavigate?: (path: string) => void
 }
 
-const FEEDBACK_URL = 'https://github.com/liuzhao1225/YouDub-webui/issues'
-const GITHUB_URL = 'https://github.com/liuzhao1225/YouDub-webui'
+const FEEDBACK_URL = 'https://github.com/liuzhao1225/YouDub-Desktop/issues'
+const GITHUB_URL = 'https://github.com/liuzhao1225/YouDub-Desktop'
 
 function ThemeIcon({ theme }: { theme: ThemePreference }) {
   if (theme === 'light') return <Sun className="size-4" />

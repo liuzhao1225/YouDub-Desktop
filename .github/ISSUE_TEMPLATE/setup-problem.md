@@ -2,7 +2,7 @@
 name: 环境配置问题
 about: 反馈安装、运行环境、依赖或模型准备过程中的问题
 title: "[环境配置] "
-labels: ''
+labels: 'bug, area: setup'
 assignees: ''
 ---
 
