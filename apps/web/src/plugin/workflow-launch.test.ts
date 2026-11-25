@@ -19,7 +19,7 @@ const document: WorkflowDocument = {
     { id: 'export', type: 'youdub.export', typeVersion: '1', provider: { id: 'youdub.media' }, config: {}, autoContinue: true },
   ],
   edges: [
-    { id: 'e1', source: { nodeId: '$inputs', portId: 'video' }, target: { nodeId: 'prepare', portId: 'media' } },
+    { id: 'e1', source: { nodeId: '$inputs', portId: 'video' }, target: { nodeId: 'prepare', portId: 'video' } },
     { id: 'e2', source: { nodeId: '$inputs', portId: 'video' }, target: { nodeId: 'export', portId: 'video' } },
     { id: 'e3', source: { nodeId: 'prepare', portId: 'audio' }, target: { nodeId: 'recognize', portId: 'audio' } },
     { id: 'e4', source: { nodeId: 'recognize', portId: 'transcript' }, target: { nodeId: 'translate', portId: 'transcript' } },
@@ -50,7 +50,7 @@ const types: NodeTypeDefinition[] = [
     providerId: 'youdub.media',
     provider: { id: 'youdub.media', operations: [] },
     operation: 'prepare',
-    inputs: [{ id: 'media', label: '视频', kind: 'artifact', acceptedSchemaIds: ['file/v1', 'video/mp4/v1'], required: true }],
+    inputs: [{ id: 'video', label: '媒体', kind: 'artifact', acceptedSchemaIds: ['file/v1', 'video/mp4/v1', 'audio/file/v1', 'audio/wav/v1'], required: true }],
     outputs: [{ name: 'audio', kind: 'artifact', schemaId: 'audio/wav/v1', required: true }],
     configSchema: { type: 'object', properties: {} },
     defaults: {},
@@ -86,6 +86,66 @@ const types: NodeTypeDefinition[] = [
     outputs: [],
   },
 ] as NodeTypeDefinition[]
+
+const audioDownload: NodeTypeDefinition = {
+  ...types[0], type: 'youdub.downloadAudio', operation: 'audio.download/v1',
+  runtimeInputSchema: { type: 'object', required: ['url'], properties: { url: { type: 'string' } } },
+  outputs: [{ name: 'audio', kind: 'artifact', schemaId: 'audio/file/v1', required: true }],
+}
+const audioInput = { ...document.inputs[0], id: 'audio', label: '音频', schemaId: 'audio/file/v1', acceptedMimeTypes: ['audio/*'] }
+const audioDocument: WorkflowDocument = {
+  ...document, inputs: [audioInput],
+  edges: document.edges.filter((edge) => edge.id !== 'e2').map((edge) =>
+    edge.source.nodeId === '$inputs' ? { ...edge, source: { nodeId: '$inputs', portId: 'audio' } } : edge),
+}
+
+it('selects the audio downloader for an audio input connected to prepare', () => {
+  const available = [...types, audioDownload]
+  expect(videoLinkInput(audioDocument, available)).toEqual(audioInput)
+  const result = withVideoLink(audioDocument, available, 'audio', 'https://youtu.be/abcdefghijk', 0)
+  expect(result.document.nodes[0]).toMatchObject({ id: 'source-download', type: 'youdub.downloadAudio' })
+  expect(result.document.edges[0]).toMatchObject({
+    source: { nodeId: 'source-download', portId: 'audio' }, target: { nodeId: 'prepare', portId: 'video' },
+  })
+})
+
+it('selects video by MIME family even when prepare accepts either output and export.video is disconnected', () => {
+  const videoDocument = { ...document, edges: document.edges.filter((edge) => edge.id !== 'e2') }
+  const available = [audioDownload, ...types]
+  expect(videoLinkInput(videoDocument, available)).toEqual(document.inputs[0])
+  const result = withVideoLink(videoDocument, available, 'video', 'https://youtu.be/abcdefghijk', 0)
+  expect(result.document.nodes[0].type).toBe('youdub.download')
+  expect(result.document.edges[0].source).toEqual({ nodeId: 'source-download', portId: 'video' })
+})
+
+it('rejects an audio link when any consumer accepts only video', () => {
+  const incompatible = { ...audioDocument, edges: [...audioDocument.edges, {
+    id: 'video-only', source: { nodeId: '$inputs', portId: 'audio' }, target: { nodeId: 'export', portId: 'video' },
+  }] }
+  const available = [...types, audioDownload]
+  expect(videoLinkInput(incompatible, available)).toBeUndefined()
+  expect(() => withVideoLink(incompatible, available, 'audio', 'https://youtu.be/abcdefghijk', 0)).toThrow()
+})
+
+it('requires an exact schema for WAV workflows even when prepare accepts generic audio', () => {
+  const wav = { ...audioDocument, inputs: [{ ...audioInput, schemaId: 'audio/wav/v1' }] }
+  expect(videoLinkInput(wav, [...types, audioDownload])).toBeUndefined()
+})
+
+it('prefers an exact file schema and respects direct workflow output contracts', () => {
+  const pluginDownload: NodeTypeDefinition = {
+    ...audioDownload, type: 'plugin.source', operation: 'plugin.fetch',
+    outputs: [{ ...audioDownload.outputs[0], name: 'original', schemaId: 'file/v1' }],
+  }
+  const available = [...types, pluginDownload]
+  const result = withVideoLink(document, available, 'video', 'https://youtu.be/abcdefghijk', 0)
+  expect(result.document.nodes[0].type).toBe('plugin.source')
+  expect(result.document.edges[0].source.portId).toBe('original')
+  const direct = { ...document, outputs: [{ ...document.inputs[0], source: { nodeId: '$inputs', portId: 'video' } }] }
+  expect(videoLinkInput(direct, types)).toBeUndefined()
+  expect(withVideoLink(direct, available, 'video', 'https://youtu.be/abcdefghijk', 0).document.outputs[0].source)
+    .toEqual({ nodeId: 'source-download', portId: 'original' })
+})
 
 it('imports links into the real reviewed-subtitles template without changing the template or its review gates', () => {
   const original = structuredClone(document)

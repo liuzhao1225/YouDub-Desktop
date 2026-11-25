@@ -5,11 +5,13 @@ import { translateMessage, type MessageKey, type Text } from '@/locales'
 const templateTitles: Record<string, MessageKey> = {
   'youdub.subtitles': 'workflows.template.subtitles',
   'youdub.dubbing': 'workflows.template.dubbing',
+  'youdub.audio-subtitles': 'workflows.template.audioSubtitles',
+  'youdub.audio-dubbing': 'workflows.template.audioDubbing',
   'youdub.subtitles-dubbing': 'workflows.template.subtitlesDubbing',
 }
 const templatePorts: Record<string, MessageKey[]> = {
   video: ['workflow.run.video', 'workflows.output.dubbedVideo'],
-  audio: ['workflows.output.dubbedAudio'],
+  audio: ['workflow.run.audio', 'workflows.output.dubbedAudio'],
   'source-subtitles': ['workflows.output.sourceSubtitles'],
   'translated-subtitles': ['workflows.output.translatedSubtitles'],
 }

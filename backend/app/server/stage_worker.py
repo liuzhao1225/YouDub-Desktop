@@ -20,7 +20,7 @@ from ..v1.errors import ApiError
 from ..v1.segments import read_transcript, read_translation
 from ..v1.steps import StageContext
 from .errors import AppError
-from .video_download import download_video
+from .video_download import download_audio, download_video
 
 
 def _resolve_device(requested: str | None, *, allow_mps: bool) -> str:
@@ -107,13 +107,14 @@ def execute_spec(spec: dict[str, Any]) -> dict[str, Any]:
     input_files = {k: Path(v).resolve() for k, v in raw_inputs.items() if v}
     cfg = spec.get("config") or {}
 
-    if op == "video.download/v1":
+    if op in {"video.download/v1", "audio.download/v1"}:
+        port, download = ("audio", download_audio) if op == "audio.download/v1" else ("video", download_video)
         url = str(spec.get("url") or "")
         proxy_port = int(cfg.get("proxyPort") or 0)
         proxy_url = str(spec.get("proxyUrl") or "")
         ffmpeg_loc = spec.get("ffmpegLocation")
         cookiefile = spec.get("cookiefile")
-        video_path, meta = download_video(
+        media_path, meta = download(
             url,
             work_dir,
             proxy_port=proxy_port,
@@ -124,7 +125,7 @@ def execute_spec(spec: dict[str, Any]) -> dict[str, Any]:
             progress=_progress,
         )
         return {
-            "artifacts": {"video": str(video_path.resolve())},
+            "artifacts": {port: str(media_path.resolve())},
             "outputs": {"metadata": meta},
         }
 
@@ -333,15 +334,16 @@ def execute_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
     if op == "media.export/v1":
         has_dub = "finalAudio" in input_files and "dubbedTimeline" in input_files
-        render_subs = bool(cfg.get("renderSubtitles", True))
-        mode = "both" if (has_dub and render_subs) else "dubbing" if has_dub else "subtitles"
+        want_subs = bool(cfg.get("renderSubtitles", True)) or bool(spec.get("hasSubtitles", False))
+        mode = "both" if (has_dub and want_subs) else "dubbing" if has_dub else "subtitles"
         task_cfg = task_cfg.model_copy(update={"output_mode": mode})
         exp_inputs: dict[str, Path] = {
-            "video": input_files["video"],
             "media_info": input_files["mediaInfo"],
             "transcript": input_files["transcript"],
             "translation": input_files["translation"],
         }
+        if "video" in input_files:
+            exp_inputs["video"] = input_files["video"]
         if has_dub:
             exp_inputs["mixed_audio"] = input_files["finalAudio"]
             exp_inputs["alignment"] = input_files["dubbedTimeline"]

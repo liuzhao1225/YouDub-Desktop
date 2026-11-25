@@ -25,11 +25,12 @@ from .events import EventHub
 from .llm import translate_transcript
 from .resources import ResourceManager
 from .settings import LLMProviderConfig, SettingsStore
-from .video_download import download_video
+from .video_download import download_audio, download_video
 from .whisper_resegment import parse_srt_transcript
 from .workflows import build_node_types, validate_workflow_document
 
 _DEFAULT_DOWNLOAD_VIDEO = download_video
+_DEFAULT_DOWNLOAD_AUDIO = download_audio
 
 
 def _sha256_path(path: Path) -> str:
@@ -834,7 +835,9 @@ class TaskRunner:
         except (OSError, subprocess.SubprocessError):
             pass
 
-    def _register_node_artifacts(self, task_id: str, node_id: str, paths: dict[str, str]) -> dict[str, Any]:
+    def _register_node_artifacts(
+        self, task_id: str, node_id: str, paths: dict[str, str], *, port_schemas: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         entries: dict[str, dict[str, Any]] = {}
         outputs: dict[str, Any] = {}
         for port_name, raw_path in paths.items():
@@ -845,15 +848,16 @@ class TaskRunner:
             mime = mimetypes.guess_type(p.name)[0] or (
                 "application/x-subrip" if p.suffix.lower() == ".srt" else "application/octet-stream"
             )
-            schema_id = (
-                "video/mp4/v1"
-                if mime.startswith("video/")
-                else "audio/wav/v1"
-                if mime.startswith("audio/")
-                else "application/x-subrip/v1"
-                if p.suffix.lower() == ".srt"
-                else "file/v1"
-            )
+            if port_schemas is not None and port_name in port_schemas:
+                schema_id = port_schemas[port_name]
+            elif mime.startswith("video/"):
+                schema_id = "video/mp4/v1"
+            elif mime.startswith("audio/"):
+                schema_id = "audio/wav/v1"
+            elif p.suffix.lower() == ".srt":
+                schema_id = "application/x-subrip/v1"
+            else:
+                schema_id = "file/v1"
             entries[art_id] = {
                 "id": art_id,
                 "schemaId": schema_id,
@@ -934,7 +938,10 @@ class TaskRunner:
                 resolved[port_id] = str(json_file)
         return resolved
 
-    async def _execute_node(self, task_id: str, graph: dict[str, Any], node: dict[str, Any], runtime_inputs: dict[str, Any]) -> dict[str, Any]:
+    async def _execute_node(
+        self, task_id: str, graph: dict[str, Any], node: dict[str, Any],
+        runtime_inputs: dict[str, Any], node_types: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         node_id = node["id"]
         ntype = node["type"]
         provider = node.get("provider") or {}
@@ -943,10 +950,24 @@ class TaskRunner:
         work_dir.mkdir(parents=True, exist_ok=True)
         in_files = self._collect_node_inputs_for_exec(task_id, graph, node_id)
 
-        if ntype == "youdub.download":
+        resolved_types = node_types if node_types is not None else self._node_types()
+        ndef = next(
+            (
+                d for d in resolved_types
+                if d["type"] == ntype and d["providerId"] == provider.get("id") and d["version"] == node.get("typeVersion")
+            ),
+            next((d for d in resolved_types if d["type"] == ntype), None),
+        )
+        port_schemas = {p["name"]: p["schemaId"] for p in (ndef or {}).get("outputs", [])}
+        operation = ndef["operation"] if ndef else ntype
+        if ntype in {"youdub.download", "youdub.downloadAudio"}:
+            is_audio = ntype == "youdub.downloadAudio"
+            port = "audio" if is_audio else "video"
+            download = download_audio if is_audio else download_video
+            default_download = _DEFAULT_DOWNLOAD_AUDIO if is_audio else _DEFAULT_DOWNLOAD_VIDEO
             url = str((runtime_inputs.get(node_id) or {}).get("url") or "")
             proxy_port = int(cfg.get("proxyPort") or 0)
-            self.append_log(task_id, f"[{node_id}] Downloading video: {url}")
+            self.append_log(task_id, f"[{node_id}] Downloading {port}: {url}")
             ff, _ = self.resources.resolve_ffmpeg()
             raw_host = (
                 urllib.parse.urlparse(url if "://" in url else f"https://{url}").hostname or ""
@@ -968,9 +989,9 @@ class TaskRunner:
                 cookie_path.write_text(cookies_text.rstrip("\n") + "\n", encoding="utf-8")
                 os.chmod(cookie_path, 0o600)
             try:
-                if download_video is not _DEFAULT_DOWNLOAD_VIDEO:
-                    video_path, meta = await asyncio.to_thread(
-                        download_video,
+                if download is not default_download:
+                    media_path, meta = await asyncio.to_thread(
+                        download,
                         url,
                         work_dir,
                         proxy_port=proxy_port,
@@ -982,7 +1003,7 @@ class TaskRunner:
                     )
                 else:
                     dl_spec: dict[str, Any] = {
-                        "operation": "video.download/v1",
+                        "operation": operation,
                         "workDir": str(work_dir),
                         "config": cfg,
                         "provider": provider,
@@ -993,19 +1014,20 @@ class TaskRunner:
                         "cookiefile": str(cookie_path) if cookie_path else None,
                     }
                     dl_result = await self._run_stage_subprocess(task_id, node_id, dl_spec)
-                    video_path = Path(dl_result["artifacts"]["video"]).resolve()
+                    media_path = Path(dl_result["artifacts"][port]).resolve()
                     meta = dl_result.get("outputs", {}).get("metadata") or {}
             finally:
                 if cookie_path is not None:
                     cookie_path.unlink(missing_ok=True)
-            self._maybe_extract_cover(task_id, video_path)
+            if not is_audio:
+                self._maybe_extract_cover(task_id, media_path)
             title = str(meta.get("title") or "").strip()
             if title:
                 cur_task = self.db.get_task(task_id)
                 cur_name = str(cur_task.get("sourceName") or "").strip()
                 if not cur_name or cur_name.startswith(("http://", "https://")):
                     self.db.update_task(task_id, source_name=title)
-            outputs = self._register_node_artifacts(task_id, node_id, {"video": str(video_path)})
+            outputs = self._register_node_artifacts(task_id, node_id, {port: str(media_path)}, port_schemas=port_schemas)
             outputs["metadata"] = meta
             return outputs
 
@@ -1052,13 +1074,11 @@ class TaskRunner:
             n["type"] == "youdub.export" and n.get("config", {}).get("renderSubtitles")
             for n in graph["nodes"]
         )
-        node_types = self._node_types()
-        ndef = next((d for d in node_types if d["type"] == ntype), None)
         mix_node = next((n for n in graph["nodes"] if n["type"] == "youdub.mix"), None)
         synth_node = next((n for n in graph["nodes"] if n["type"] == "youdub.synthesize"), None)
         artifact_index = self._load_artifact_index(task_id)
         spec: dict[str, Any] = {
-            "operation": ndef["operation"] if ndef else ntype,
+            "operation": operation,
             "workDir": str(work_dir),
             "config": cfg,
             "provider": provider,
@@ -1082,16 +1102,16 @@ class TaskRunner:
             result = await self._run_stage_subprocess(task_id, node_id, spec)
 
         outputs = dict(result.get("outputs") or {})
-        outputs.update(self._register_node_artifacts(task_id, node_id, result.get("artifacts") or {}))
+        outputs.update(self._register_node_artifacts(task_id, node_id, result.get("artifacts") or {}, port_schemas=port_schemas))
         if result.get("extraArtifacts"):
-            self._register_node_artifacts(task_id, node_id, result["extraArtifacts"])
+            self._register_node_artifacts(task_id, node_id, result["extraArtifacts"], port_schemas=port_schemas)
         # Also register individual synthesized speech segments as artifacts for inline audio playback
         if ntype == "youdub.synthesize" and isinstance(outputs.get("speechAudio"), dict):
             extra_paths = {}
             for seg in outputs["speechAudio"].get("segments", []):
                 if seg.get("artifactPath"):
                     extra_paths[seg["artifactId"]] = seg["artifactPath"]
-            reg = self._register_node_artifacts(task_id, node_id, extra_paths)
+            reg = self._register_node_artifacts(task_id, node_id, extra_paths, port_schemas=port_schemas)
             for seg in outputs["speechAudio"].get("segments", []):
                 art = reg.get(seg.get("artifactId"))
                 if art:
@@ -1123,7 +1143,7 @@ class TaskRunner:
                 self.append_log(task_id, f"Starting step: {node_id} ({node_map[node_id]['type']})")
 
                 node = node_map[node_id]
-                outputs = await self._execute_node(task_id, graph, node, runtime_inputs)
+                outputs = await self._execute_node(task_id, graph, node, runtime_inputs, node_types)
                 self._check_not_cancelled(task_id)
 
                 auto_continue = bool(node.get("autoContinue", True))

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import time
+import wave
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import Mock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.server.api import create_app
@@ -39,9 +43,54 @@ def test_setup_auth_and_seeded_workflows(tmp_path):
         assert transcribe["provider"]["models"][0]["id"] == "large-v3-turbo"
 
         docs = client.get("/api/workflow-documents", headers=headers).json()["items"]
-        assert {d["id"] for d in docs} == {"youdub.subtitles", "youdub.dubbing", "youdub.subtitles-dubbing"}
+        assert {d["id"] for d in docs} == {
+            "youdub.subtitles", "youdub.dubbing", "youdub.subtitles-dubbing",
+            "youdub.audio-subtitles", "youdub.audio-dubbing",
+        }
+        for doc in docs:
+            validation = client.post(
+                "/api/workflow-documents/validate", headers=headers, json={"document": doc["document"]},
+            ).json()
+            assert validation == {"valid": True, "diagnostics": []}, doc["id"]
         sub_doc = next(d["document"] for d in docs if d["id"] == "youdub.subtitles")
         assert next(n for n in sub_doc["nodes"] if n["id"] == "recognize")["provider"]["model"] == "large-v3-turbo"
+
+
+def _use_audio_download(doc):
+    doc["inputs"] = []
+    doc["nodes"].insert(0, {
+        "id": "download", "type": "youdub.downloadAudio", "typeVersion": "1.0.0",
+        "provider": {"id": "youdub.download"}, "config": {}, "autoContinue": True,
+    })
+    for edge in doc["edges"]:
+        if edge["source"] == {"nodeId": "$inputs", "portId": "audio"}:
+            edge["source"]["nodeId"] = "download"
+
+
+def test_audio_download_port_contracts(tmp_path):
+    _, client = _make_client(tmp_path)
+    with client:
+        client.post("/api/setup", json={"action": "configure", "path": str(tmp_path / "data")})
+        catalog = {n["type"]: n for n in client.get("/api/node-types").json()["items"]}
+        for node_type, port, schema in (
+            ("youdub.download", "video", "video/mp4/v1"),
+            ("youdub.downloadAudio", "audio", "audio/file/v1"),
+        ):
+            node = catalog[node_type]
+            assert node["providerId"] == node["provider"]["id"] == "youdub.download"
+            assert [(p["name"], p["schemaId"]) for p in node["outputs"]] == [(port, schema)]
+
+        doc = client.get("/api/workflow-documents/youdub.audio-subtitles").json()["document"]
+        _use_audio_download(doc)
+        validate = "/api/workflow-documents/validate"
+        assert client.post(validate, json={"document": doc}).json() == {"valid": True, "diagnostics": []}
+        doc["edges"].append({
+            "id": "invalid", "source": {"nodeId": "download", "portId": "audio"},
+            "target": {"nodeId": "export", "portId": "video"},
+        })
+        result = client.post(validate, json={"document": doc}).json()
+        assert result["valid"] is False
+        assert [(d["edgeId"], d["code"]) for d in result["diagnostics"]] == [("invalid", "INCOMPATIBLE_PORTS")]
 
 
 def test_workflow_validation_rejects_cycle(tmp_path):
@@ -221,6 +270,143 @@ def test_dag_pause_correction_approve_rerun_and_log_tail(monkeypatch, tmp_path):
         ).json()
         assert set(preview["reusedSteps"]) == {"prepare", "recognize", "translate", "export"}
         assert preview["dirtySteps"] == []
+
+
+def test_audio_download_worker(monkeypatch, tmp_path):
+    from backend.app.server import stage_worker
+
+    audio = tmp_path / "download.webm"
+    metadata = {"title": "Interview"}
+    download = Mock(return_value=(audio, metadata))
+    monkeypatch.setattr(stage_worker, "download_audio", download)
+    spec = {
+        "operation": "audio.download/v1", "workDir": str(tmp_path), "url": "https://example.com/interview",
+        "config": {"proxyPort": 8080}, "proxyUrl": "http://localhost:8080",
+        "ffmpegLocation": "/bin/ffmpeg", "cookiefile": str(tmp_path / "cookies.txt"),
+    }
+    assert stage_worker.execute_spec(spec) == {"artifacts": {"audio": str(audio)}, "outputs": {"metadata": metadata}}
+    download.assert_called_once_with(
+        spec["url"], tmp_path, proxy_port=8080, proxy_url=spec["proxyUrl"], ffmpeg_location=spec["ffmpegLocation"],
+        cookiefile=spec["cookiefile"], check_cancel=stage_worker._noop_cancel, progress=stage_worker._progress,
+    )
+
+
+def test_audio_export_worker_honors_requested_subtitle_files(monkeypatch, tmp_path):
+    from backend.app.server import stage_worker
+    from backend.app.v1.steps import Completed
+
+    run = Mock(return_value=Completed(output_files={}))
+    monkeypatch.setattr(stage_worker.export, "run", run)
+    stage_worker.execute_spec({
+        "operation": "media.export/v1", "workDir": str(tmp_path),
+        "config": {"renderSubtitles": False}, "hasDubbing": True, "hasSubtitles": True,
+        "inputFiles": {p: str(tmp_path / p) for p in ("mediaInfo", "transcript", "translation", "finalAudio", "dubbedTimeline")},
+    })
+    ctx = run.call_args.args[0]
+    assert ctx.config.output_mode == "both"
+    assert set(ctx.input_files) == {"media_info", "transcript", "translation", "mixed_audio", "alignment"}
+
+
+@pytest.mark.parametrize("template_id", ["youdub.audio-subtitles", "youdub.audio-dubbing"])
+def test_audio_workflow_task(monkeypatch, tmp_path, template_id):
+    from backend.app.server import stage_worker
+
+    app, client = _make_client(tmp_path)
+    runner = app.state.runner
+    cover = Mock()
+    monkeypatch.setattr(runner, "_maybe_extract_cover", cover)
+
+    duration_ms = 1000
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setparams((1, 2, 16000, 0, "NONE", ""))
+        wav.writeframes(bytes(16000 * 2))
+    wav_bytes = buffer.getvalue()
+    source_url = "https://example.com/interview"
+    is_download = template_id == "youdub.audio-subtitles"
+
+    def download_audio(url, work_dir, **_kwargs):
+        assert url == source_url
+        path = work_dir / "interview.webm"
+        path.write_bytes(b"downloaded audio")
+        return path, {"title": "Interview"}
+
+    monkeypatch.setattr(stage_worker, "download_audio", download_audio)
+    segment = {"id": "one", "start_ms": 0, "end_ms": duration_ms, "text": "Hello"}
+
+    async def translate(transcript, **_kwargs):
+        assert transcript["segments"] == [segment]
+        return {"source_language": "en", "target_language": "zh", "segments": [{"segment_id": "one", "text": "你好"}]}
+
+    monkeypatch.setattr("backend.app.server.dag.translate_transcript", translate)
+
+    async def run_stage(task_id, node_id, spec):
+        inputs = spec["inputFiles"]
+        op = spec["operation"]
+        if op in {"audio.download/v1", "media.export/v1"}:
+            return stage_worker.execute_spec(spec)
+        if op == "media.prepare/v1":
+            source = Path(inputs["video"])
+            assert source.read_bytes() == (b"downloaded audio" if is_download else wav_bytes)
+            prepared = Path(spec["workDir"]) / "source.wav"
+            prepared.write_bytes(wav_bytes)
+            return {"artifacts": {"sourceAudio": str(prepared)}, "outputs": {"mediaInfo": {"duration_ms": duration_ms}}}
+        if op == "audio.separate/v1":
+            return {"artifacts": {"vocals": inputs["sourceAudio"], "background": inputs["sourceAudio"]}}
+        if op == "speech.transcribe/v1":
+            return {"outputs": {"transcript": {"detected_language": "en", "segments": [segment]}}}
+        if op == "speech.reference/v1":
+            return {"outputs": {"references": {}}}
+        if op == "speech.synthesize/v1":
+            return {"outputs": {"speechAudio": {"segments": []}}}
+        if op == "audio.mix/v1":
+            timeline = {"segments": [{
+                "segment_id": "one", "source_start_ms": 0, "source_end_ms": duration_ms,
+                "dubbed_start_ms": 0, "dubbed_end_ms": duration_ms,
+            }]}
+            return {"artifacts": {"finalAudio": inputs["background"]}, "outputs": {"dubbedTimeline": timeline}}
+        raise AssertionError(f"Unexpected stage {op}")
+
+    monkeypatch.setattr(runner, "_run_stage_subprocess", run_stage)
+    with client:
+        client.post("/api/setup", json={"action": "configure", "path": str(tmp_path / "data")})
+        doc = client.get(f"/api/workflow-documents/{template_id}").json()["document"]
+        payload = {"graphDocument": doc}
+        if is_download:
+            _use_audio_download(doc)
+            for node in doc["nodes"]:
+                node["autoContinue"] = True
+            payload.update(sourceName=source_url, nodeRuntimeInputs={"download": {"url": source_url}})
+            created = client.post("/api/tasks", json=payload)
+        else:
+            created = client.post("/api/tasks", data={"request": json.dumps(payload)},
+                                  files={"input.audio": ("interview.wav", wav_bytes, "audio/wav")})
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        task_url = f"/api/tasks/{task_id}"
+        deadline = time.monotonic() + 5
+        while True:
+            task = client.get(task_url).json()
+            if task["status"] not in {"queued", "running"} or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert task["status"] == "succeeded", task
+        cover.assert_not_called()
+        export_dir = runner.task_dir(task_id) / "nodes" / "export" / "export_out"
+        output_ids = {out["id"] for out in task["outputs"]}
+        if is_download:
+            assert task["sourceName"] == "Interview"
+            path, artifact = runner.resolve_artifact_path(task_id, "download:audio")
+            assert path.suffix == ".webm"
+            assert artifact["schemaId"] == "audio/file/v1"
+            assert output_ids == {"source-subtitles", "translated-subtitles"}
+            assert {p.name for p in export_dir.iterdir()} == {"source.srt", "translated.srt"}
+            assert "Hello" in client.get(f"{task_url}/files/source-subtitles").text
+            assert "你好" in client.get(f"{task_url}/files/translated-subtitles").text
+        else:
+            assert output_ids == {"audio"}
+            assert {p.name for p in export_dir.iterdir()} == {"audio.wav"}
+            assert client.get(f"{task_url}/files/audio").content == wav_bytes
 
 
 def test_stage_worker_export_port_mapping_keep_bg_false_and_japanese_alignment(monkeypatch, tmp_path):

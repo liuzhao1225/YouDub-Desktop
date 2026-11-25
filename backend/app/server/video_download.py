@@ -1,4 +1,4 @@
-"""Safe YouTube/Bilibili URL validation and yt-dlp video download."""
+"""Safe YouTube/Bilibili URL validation and yt-dlp media downloads."""
 
 from __future__ import annotations
 
@@ -237,11 +237,60 @@ def download_video(
     progress: Callable[[float | None, str], None] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Download a validated YouTube or Bilibili video using yt-dlp."""
+    return _download_media(
+        raw_url, work_dir, audio_only=False, proxy_port=proxy_port, proxy_url=proxy_url,
+        ffmpeg_location=ffmpeg_location, cookiefile=cookiefile, check_cancel=check_cancel, progress=progress,
+    )
+
+
+def download_audio(
+    raw_url: str,
+    work_dir: Path,
+    *,
+    proxy_port: Any = 0,
+    proxy_url: str = "",
+    ffmpeg_location: str | None = None,
+    cookiefile: str | None = None,
+    check_cancel: Callable[[], None] | None = None,
+    progress: Callable[[float | None, str], None] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Download the best available audio from a validated YouTube or Bilibili URL."""
+    return _download_media(
+        raw_url, work_dir, audio_only=True, proxy_port=proxy_port, proxy_url=proxy_url,
+        ffmpeg_location=ffmpeg_location, cookiefile=cookiefile, check_cancel=check_cancel, progress=progress,
+    )
+
+
+def _find_downloaded_audio(candidate: Path, work_dir: Path) -> Path:
+    def complete(path: Path) -> bool:
+        return path.suffix not in {".part", ".ytdl", ".temp"} and path.is_file() and path.stat().st_size > 0
+
+    if complete(candidate):
+        return candidate
+    for path in sorted(work_dir.glob("source.*")):
+        if complete(path):
+            return path
+    raise AppError(502, "DOWNLOAD_FAILED", "yt-dlp did not produce a downloaded audio file.")
+
+
+def _download_media(
+    raw_url: str,
+    work_dir: Path,
+    *,
+    audio_only: bool,
+    proxy_port: Any,
+    proxy_url: str,
+    ffmpeg_location: str | None,
+    cookiefile: str | None,
+    check_cancel: Callable[[], None] | None,
+    progress: Callable[[float | None, str], None] | None,
+) -> tuple[Path, dict[str, Any]]:
     import yt_dlp
     from ..config import ffmpeg_binary
 
     target_url = video_url(raw_url)
     proxy = _resolve_proxy(proxy_port=proxy_port, proxy_url=proxy_url)
+    media_type = "audio" if audio_only else "video"
 
     def _cancel_guard() -> None:
         if check_cancel is not None:
@@ -264,14 +313,13 @@ def download_video(
         state = status.get("status", "")
         if state == "downloading":
             pct = f" ({ratio * 100:.1f}%)" if ratio is not None else ""
-            progress(ratio, f"Downloading source video{pct}")
+            progress(ratio, f"Downloading source {media_type}{pct}")
         elif state == "finished":
-            progress(0.99, "Finalizing downloaded video")
+            progress(0.99, f"Finalizing downloaded {media_type}")
 
     options: dict[str, Any] = {
         "outtmpl": str(work_dir / "source.%(ext)s"),
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
+        "format": "bestaudio/best" if audio_only else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "noplaylist": True,
         "retries": 0,
         "ignoreerrors": False,
@@ -283,6 +331,8 @@ def download_video(
             "Live streams are not supported" if info_dict.get("is_live") else None
         ),
     }
+    if not audio_only:
+        options["merge_output_format"] = "mp4"
     if ffmpeg_dir:
         options["ffmpeg_location"] = ffmpeg_dir
     if cookiefile:
@@ -300,13 +350,16 @@ def download_video(
             if not isinstance(info, dict):
                 raise ApiError(502, "UNSUPPORTED_MEDIA", "Live streams or empty responses are not supported.", stage="download")
             candidate = Path(ydl.prepare_filename(info))
-            mp4_candidate = candidate.with_suffix(".mp4")
-            downloaded_path = mp4_candidate if mp4_candidate.is_file() else candidate
-            if not downloaded_path.is_file() or downloaded_path.stat().st_size == 0:
-                matches = sorted(work_dir.glob("source.*"))
-                if not matches:
-                    raise AppError(502, "DOWNLOAD_FAILED", "yt-dlp did not produce a downloaded video file.")
-                downloaded_path = matches[0]
+            if audio_only:
+                downloaded_path = _find_downloaded_audio(candidate, work_dir)
+            else:
+                mp4_candidate = candidate.with_suffix(".mp4")
+                downloaded_path = mp4_candidate if mp4_candidate.is_file() else candidate
+                if not downloaded_path.is_file() or downloaded_path.stat().st_size == 0:
+                    matches = sorted(work_dir.glob("source.*"))
+                    if not matches:
+                        raise AppError(502, "DOWNLOAD_FAILED", "yt-dlp did not produce a downloaded video file.")
+                    downloaded_path = matches[0]
             return downloaded_path, {
                 "title": info.get("title") or downloaded_path.stem,
                 "sourceUrl": target_url,

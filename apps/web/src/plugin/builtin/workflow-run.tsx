@@ -28,6 +28,7 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
   const [linkTouched, setLinkTouched] = useState(false)
   const [localError, setError] = useState(''), [validating, setValidating] = useState(false)
   const linkInput = videoLinkInput(document, types)
+  const isAudioLink = linkInput && !linkInput.acceptedMimeTypes.some((mime) => mime.startsWith('video/')) && linkInput.acceptedMimeTypes.some((mime) => mime.startsWith('audio/'))
   const changeFile = useCallback((input: GraphInput, file?: File) => {
     // macOS may omit SRT's MIME type; multipart would otherwise send octet-stream.
     if (file && input.schemaId === 'application/x-subrip/v1' && /\.srt$/i.test(file.name) && (!file.type || file.type === 'application/octet-stream')) {
@@ -132,7 +133,7 @@ export function WorkflowRun({ document, types, revision, afterInputs, prominent 
       </div>
       {linkTouched && linkError && <div className="mt-2"><InlineAlert>{linkError}</InlineAlert></div>}
       {proxyField && <div className="mt-3"><ConfigEditor useSlot={useSlot} ownerId="video-link.download" schema={{ type: 'object', properties: { proxyPort: proxyField } }} value={{ proxyPort }} diagnostics={[]} readOnly={locked} onChange={(config) => setDraft((current) => ({ ...current, proxyPort: config.proxyPort as number | undefined }))} /></div>}
-      <div className="my-2 text-center text-xs text-muted-foreground">{tx("workflow.run.or.upload.a.video")}</div>
+      <div className="my-2 text-center text-xs text-muted-foreground">{tx(isAudioLink ? "workflow.run.or.upload.an.audio" : "workflow.run.or.upload.a.video")}</div>
     </div>}
     <div className="grid gap-3">{document.inputs.map((input) => <UploadSlot key={input.id} slot={{ ...input, name: input.id, label: workflowPortLabel(document, input, tx) }} file={files[input.id]} disabled={locked} alternative={input.id === linkInput?.id} onChange={(file) => changeFile(input, file)} />)}</div>
     </div>

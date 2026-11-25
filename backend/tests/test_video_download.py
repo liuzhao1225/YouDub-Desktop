@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.request import Request
 
 import pytest
@@ -8,7 +10,7 @@ import yt_dlp
 
 from backend.app.server import video_download
 from backend.app.server.errors import AppError
-from backend.app.server.video_download import SafeRedirectHandler, download_video, video_url
+from backend.app.server.video_download import SafeRedirectHandler, download_audio, download_video, video_url
 from backend.app.v1.errors import OperationCancelledError
 
 
@@ -93,6 +95,8 @@ def test_proxy_reaches_downloader_and_short_link_resolver(tmp_path, monkeypatch,
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
     path, meta = download_video(url, work, proxy_port=port)
     assert path == work / "source.mp4"
+    assert received["options"]["format"] == "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    assert received["options"]["merge_output_format"] == "mp4"
     assert received["options"]["proxy"] == expected
     assert received["options"]["retries"] == 0
     assert received["options"]["ignoreerrors"] is False
@@ -104,8 +108,77 @@ def test_proxy_reaches_downloader_and_short_link_resolver(tmp_path, monkeypatch,
         assert received["url"] == "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 
 
-@pytest.mark.parametrize("mode", ["network", "live", "cancel"])
-def test_download_failure_never_leaves_partial_file(tmp_path, monkeypatch, mode):
+def test_download_audio_uses_native_format_and_resolved_url(tmp_path, monkeypatch):
+    short_url = "https://b23.tv/abc"
+    resolved = "https://www.bilibili.com/video/BV1xx411c7mD/"
+    proxy = "http://127.0.0.1:7897"
+    resolve = Mock(return_value=resolved)
+    monkeypatch.setattr(video_download, "_resolve_short_link", resolve)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    audio = tmp_path / "source.webm"
+    messages = []
+
+    def downloader(options):
+        assert options["format"] == "bestaudio/best"
+        assert "merge_output_format" not in options
+        assert options["proxy"] == proxy
+        assert options["cookiefile"] == str(cookies.resolve())
+
+        def extract_info(url, download):
+            assert url == resolved
+            assert download is True
+            hook = options["progress_hooks"][0]
+            hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 2})
+            audio.write_bytes(b"audio")
+            (tmp_path / "source.mp4").write_bytes(b"other file")
+            hook({"status": "finished"})
+            return {"title": "Sample", "duration": 19}
+
+        return nullcontext(SimpleNamespace(extract_info=extract_info, prepare_filename=lambda _: str(audio)))
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", downloader)
+    path, meta = download_audio(
+        short_url, tmp_path, proxy_url=proxy, cookiefile=str(cookies),
+        progress=lambda ratio, message: messages.append((ratio, message)),
+    )
+    resolve.assert_called_once_with(short_url, proxy)
+    assert path == audio
+    assert meta == {"title": "Sample", "sourceUrl": resolved, "duration": 19}
+    assert messages == [(0.5, "Downloading source audio (50.0%)"), (0.99, "Finalizing downloaded audio")]
+
+
+@pytest.mark.parametrize("has_audio", [True, False])
+def test_download_audio_fallback_requires_complete_nonempty_file(tmp_path, monkeypatch, has_audio):
+    candidate = tmp_path / "source.m4a"
+    candidate.touch()
+    for suffix in (".part", ".ytdl", ".temp"):
+        (tmp_path / f"source.m4a{suffix}").write_bytes(b"partial")
+    audio = tmp_path / "source.opus"
+    if has_audio:
+        audio.write_bytes(b"audio")
+
+    downloader = Mock()
+    downloader.extract_info.return_value = {}
+    downloader.prepare_filename.return_value = str(candidate)
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", lambda _: nullcontext(downloader))
+    url = "https://youtu.be/jNQXAC9IVRw"
+    if has_audio:
+        path, meta = download_audio(url, tmp_path)
+        assert path == audio
+        assert meta["title"] == audio.stem
+    else:
+        with pytest.raises(AppError) as error:
+            download_audio(url, tmp_path)
+        assert error.value.status_code == 502
+        assert error.value.code == "DOWNLOAD_FAILED"
+        assert error.value.message == "yt-dlp did not produce a downloaded audio file."
+        assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("download", [download_video, download_audio])
+@pytest.mark.parametrize("mode", ["network", "live", "cancel", "cancel_during_download"])
+def test_download_failure_never_leaves_partial_file(tmp_path, monkeypatch, mode, download):
     original = RuntimeError("download network failure")
 
     class Downloader:
@@ -120,21 +193,24 @@ def test_download_failure_never_leaves_partial_file(tmp_path, monkeypatch, mode)
 
         def extract_info(self, *_args, **_kwargs):
             (tmp_path / "source.mp4").write_bytes(b"partial")
+            (tmp_path / "source.webm.part").write_bytes(b"partial")
             if mode == "network":
                 raise original
             if mode == "live":
                 raise yt_dlp.utils.RejectedVideoReached("live")
+            self.options["progress_hooks"][0]({"status": "downloading"})
             pytest.fail("Rejected download continued")
 
     def cancelled():
-        raise OperationCancelledError("CANCELLED", "cancelled")
+        if mode == "cancel" or (tmp_path / "source.webm.part").exists():
+            raise OperationCancelledError("CANCELLED", "cancelled")
 
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
     with pytest.raises((RuntimeError, AppError, OperationCancelledError)) as error:
-        download_video(
+        download(
             "https://youtu.be/jNQXAC9IVRw",
             tmp_path,
-            check_cancel=cancelled if mode == "cancel" else None,
+            check_cancel=cancelled if mode in {"cancel", "cancel_during_download"} else None,
         )
     if mode == "network":
         assert error.value is original

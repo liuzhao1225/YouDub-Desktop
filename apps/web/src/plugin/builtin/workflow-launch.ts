@@ -17,24 +17,36 @@ export function compatibleInputFiles(previous: InputFile[], inputs: GraphInput[]
 }
 function downloadForInput(document: WorkflowDocument, types: NodeTypeDefinition[], input: GraphInput) {
   const isSource = (source: { nodeId: string; portId: string }) => source.nodeId === '$inputs' && source.portId === input.id
-  for (const definition of types.filter((type) => type.type === 'youdub.download')) {
-    const output = definition.outputs.find((port) => port.kind === 'artifact' && document.edges.filter((edge) => isSource(edge.source)).every((edge) => {
-      const node = document.nodes.find((item) => item.id === edge.target.nodeId)
-      const target = node && nodeDefinition(node, types)?.inputs.find((item) => item.id === edge.target.portId)
-      return target?.kind === 'artifact' && target.acceptedSchemaIds.includes(port.schemaId)
-    }) && document.outputs.filter((item) => isSource(item.source)).every((item) => item.schemaId === port.schemaId))
-    if (output) return { definition, output }
-  }
+  const consumers = document.edges.filter((edge) => isSource(edge.source)).map(({ target }) => {
+    const node = document.nodes.find((item) => item.id === target.nodeId)
+    return node && nodeDefinition(node, types)?.inputs.find((port) => port.id === target.portId)
+  })
+  const graphOutputs = document.outputs.filter((port) => isSource(port.source))
+  const downloads = types.filter((type) => type.inputs.length === 0 && (
+    type.runtimeInputSchema?.required?.includes('url') || type.operation === 'download' ||
+    type.type === 'youdub.download' || type.operation?.endsWith('.download/v1')
+  ))
+  const candidates = downloads.flatMap((definition) => definition.outputs
+    .filter((port) => port.kind === 'artifact' &&
+      consumers.every((target) => target?.kind === 'artifact' && target.acceptedSchemaIds.includes(port.schemaId)) &&
+      graphOutputs.every((target) => target.schemaId === port.schemaId))
+    .map((output) => ({ definition, output })))
+  const exact = candidates.find(({ output }) => output.schemaId === input.schemaId)
+  if (exact || input.schemaId !== 'file/v1') return exact
+  return candidates.find(({ output }) => {
+    const prefix = output.schemaId.split('/')[0] + '/'
+    return !input.acceptedMimeTypes.length || input.acceptedMimeTypes.some((mime) => mime === '*/*' || mime.startsWith(prefix))
+  })
 }
 export function videoLinkInput(document: WorkflowDocument, types: NodeTypeDefinition[]) {
-  const videoInputs = document.inputs.filter((input) => input.acceptedMimeTypes.some((mime) => mime.startsWith('video/')))
-  const input = videoInputs.length === 1 ? videoInputs[0] : undefined
+  const mediaInputs = document.inputs.filter((input) => input.acceptedMimeTypes.some((mime) => mime.startsWith('video/') || mime.startsWith('audio/')))
+  const input = mediaInputs.length === 1 ? mediaInputs[0] : undefined
   return input && downloadForInput(document, types, input) ? input : undefined
 }
 export function withVideoLink(document: WorkflowDocument, types: NodeTypeDefinition[], inputId: string, url: string, proxyPort: number): { document: WorkflowDocument; runtime: Record<string, JsonObject> } {
   const input = document.inputs.find((item) => item.id === inputId)
   const { definition, output } = input && downloadForInput(document, types, input) || {}
-  if (!input || !definition || !output) throw new Error('The workflow cannot import this video link.')
+  if (!input || !definition || !output) throw new Error('The workflow cannot import this media link.')
   let id = 'source-download'
   while (document.nodes.some((node) => node.id === id)) id += '-1'
   const source = (endpoint: { nodeId: string; portId: string }) => endpoint.nodeId === '$inputs' && endpoint.portId === inputId ? { nodeId: id, portId: output.name } : endpoint

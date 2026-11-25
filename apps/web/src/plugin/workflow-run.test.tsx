@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { LanguageProvider } from '@/test/language-provider'
 import { type NodeTypeDefinition, type WorkflowDocument } from './sdk'
 import { WorkflowRun as WorkflowRunView } from './builtin/workflow-run'
+import { GraphPorts } from './builtin/workflow-settings'
 import { WorkflowRerun as WorkflowRerunView } from './builtin/workflow-rerun'
 import { WorkflowResources, type ResourceState } from './builtin/workflow-resources'
 import { bindTestComponent } from './test-bindings'
@@ -158,6 +159,62 @@ it('keeps the original link-above-upload layout and submits URL input through a 
   expect(submitted.config).toEqual({})
   expect(JSON.stringify(submitted.graphDocument)).not.toContain('youtube.com')
 })
+it.each(['pasted link', 'local MP3'])('submits an audio-only workflow from a %s', async (source) => {
+  const audio = { ...graph().inputs[0], id: 'audio', label: '音频', schemaId: 'audio/file/v1', acceptedMimeTypes: ['audio/*'] }
+  const document: WorkflowDocument = { ...graph(), inputs: [audio], nodes: [], edges: [],
+    outputs: [{ ...audio, id: 'original', source: { nodeId: '$inputs', portId: audio.id } }] }
+  const download: NodeTypeDefinition = { ...downloadDescriptor, type: 'youdub.downloadAudio', providerId: 'youdub.download',
+    provider: { id: 'youdub.download', operations: [] }, operation: 'audio.download/v1', runtimeInputSchema: { required: ['url'] },
+    outputs: [{ name: 'audio', kind: 'artifact', schemaId: audio.schemaId, required: true }] }
+  const request = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path.includes('/validate')) return { valid: true, diagnostics: [] }
+    if (path === '/api/tasks' && init?.method === 'POST') return { id: 'created' }
+    return ready
+  })
+  const { push } = mount(<WorkflowRun {...runCallbacks} prominent document={document} types={[download]} />, request)
+  const user = userEvent.setup()
+  const file = new File(['audio'], 'local.mp3', { type: 'audio/mpeg' })
+  expect(screen.getByText('或上传本地音频')).toBeVisible()
+  expect(screen.getByText('拖入音频文件，或点击选择')).toBeVisible()
+  expect(screen.queryByRole('button', { name: '使用黄仁勋采访视频' })).not.toBeInTheDocument()
+  fireEvent.paste(window.document.body, { clipboardData: { getData: () => 'https://youtu.be/abcdefghijk' } })
+  expect(screen.getByLabelText('视频链接')).toHaveValue('https://www.youtube.com/watch?v=abcdefghijk')
+  if (source === 'local MP3') {
+    await user.upload(screen.getByLabelText('音频 *'), file)
+    expect(screen.getByLabelText('视频链接')).toHaveValue('')
+  }
+  const submit = screen.getByRole('button', { name: source === 'local MP3' ? '开始处理' : '下载并处理' })
+  await waitFor(() => expect(submit).toBeEnabled())
+  await user.click(submit)
+  await waitFor(() => expect(push).toHaveBeenCalledWith('/tasks/created'))
+  const body = request.mock.calls.find(([path]) => path === '/api/tasks')![1]!.body as FormData
+  const submitted = JSON.parse(String(body.get('request')))
+  if (source === 'local MP3') {
+    expect(body.get('input.audio')).toBe(file)
+    expect(submitted.graphDocument).toEqual(document)
+    expect(submitted.nodeRuntimeInputs).toEqual({})
+  } else {
+    expect(body.has('input.audio')).toBe(false)
+    const node = submitted.graphDocument.nodes[0]
+    expect(node.type).toBe('youdub.downloadAudio')
+    expect(submitted.graphDocument.outputs[0].source).toEqual({ nodeId: node.id, portId: 'audio' })
+    expect(submitted.nodeRuntimeInputs[node.id]).toEqual({ url: 'https://www.youtube.com/watch?v=abcdefghijk' })
+  }
+})
+
+it('keeps saved WAV inputs selected and offers generic audio for editing', async () => {
+  const document = graph()
+  document.inputs[0] = { ...document.inputs[0], schemaId: 'audio/wav/v1', acceptedMimeTypes: ['audio/*'] }
+  const onChange = vi.fn()
+  mount(<GraphPorts document={document} types={types} direction="inputs" disabled={false} onChange={onChange} />, vi.fn())
+  const select = screen.getByRole('button', { name: '输入类型' })
+  expect(select).toHaveTextContent('WAV')
+  const user = userEvent.setup()
+  await user.click(select)
+  await user.click(screen.getByRole('menuitem', { name: '音频' }))
+  expect(onChange).toHaveBeenCalledWith({ ...document, inputs: [{ ...document.inputs[0], schemaId: 'audio/file/v1' }] })
+})
+
 function mount(child: ReactNode, request: ReturnType<typeof vi.fn>) {
   const push = vi.fn()
   const context = {

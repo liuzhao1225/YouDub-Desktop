@@ -1,4 +1,4 @@
-"""Export the selected subtitles, dubbing or combined media on the source video."""
+"""Export subtitles and dubbing, rendering a video when one is supplied."""
 
 from __future__ import annotations
 
@@ -221,21 +221,21 @@ def run(context: StageContext, progress: Callable[[float | None, str], None], *,
     include_subtitles = context.config.output_mode in {"subtitles", "both"}
     include_dubbing = context.config.output_mode in {"dubbing", "both"}
     context.check_cancel()
-    video = _input_file(context, "video")
+    video = _input_file(context, "video") if "video" in context.input_files else None
     info = _read_json(context, "media_info")
     transcript = read_transcript(_input_file(context, "transcript"), stage="export")
     translation = read_translation(_input_file(context, "translation"), transcript, stage="export")
     if translation.target_language != context.config.target_language:
         raise _invalid("Translation language does not match the task configuration.")
-    for key in ("duration_ms", "width", "height"):
+    required_fields = ("duration_ms", "width", "height") if video is not None else ("duration_ms",)
+    for key in required_fields:
         if type(info.get(key)) is not int or info[key] <= 0:
             raise _invalid(f"Source media {key} is invalid.")
     rows = _subtitle_rows(transcript, translation)
     output = output_dir
     output.mkdir(parents=True, exist_ok=True)
     source_srt, translated_srt = output / "source.srt", output / "translated.srt"
-    final_video = output / "video.mp4"
-    outputs = {"video": final_video}
+    outputs: dict[str, Path] = {}
     translated_rows = rows
     progress(0.0, "Preparing output media")
     if include_dubbing:
@@ -263,6 +263,11 @@ def run(context: StageContext, progress: Callable[[float | None, str], None], *,
         _write_srt(translated_srt, translated_rows, translated=True,
                    language=translation.target_language, aligned_cues=prepared_cues)
         outputs.update(source_subtitles=source_srt, translated_subtitles=translated_srt)
+    if video is None:
+        progress(1.0, "Output media is ready")
+        return Completed(output_files=outputs)
+
+    final_video = output / "video.mp4"
     progress(None, "Rendering output video")
     command = [
         ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-xerror",
@@ -290,5 +295,6 @@ def run(context: StageContext, progress: Callable[[float | None, str], None], *,
     if not final_video.is_file() or final_video.stat().st_size == 0:
         raise ApiError(500, "STAGE_OUTPUT_MISSING", "The output video was not produced.",
                        stage="export", action="retry")
+    outputs["video"] = final_video
     progress(1.0, "Output media is ready")
     return Completed(output_files=outputs)

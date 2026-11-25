@@ -1,7 +1,7 @@
 import { Surface } from '@/components/ui/surface'
 import { InlineAlert } from '@/components/inline-alert'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { FileText, Film, Upload, X } from '@/lib/icons'
+import { AudioLines, FileText, Film, Upload, X } from '@/lib/icons'
 import { text, type InputSlot } from '../sdk'
 import { useI18n, useText } from '@/lib/i18n'
 import { formatBytes } from '@/lib/format'
@@ -28,7 +28,8 @@ export function UploadSlot({ slot, file, disabled, alternative, onChange }: { sl
   }
   useEffect(() => { if (!file && input.current) input.current.value = '' }, [file])
   const video = slot.acceptedMimeTypes.some((mime) => mime.startsWith('video/'))
-  const Icon = video ? Film : FileText
+  const audio = !video && slot.acceptedMimeTypes.some((mime) => mime.startsWith('audio/'))
+  const Icon = video ? Film : audio ? AudioLines : FileText
   return <div>
     <label htmlFor={inputId} className="sr-only">{text(slot.label, language)}{slot.required ? ' *' : ''}</label>
     <div onDragEnter={() => { if (!disabled) setDragActive(true) }} onDragLeave={() => setDragActive(false)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); setDragActive(false); if (!disabled && event.dataTransfer.files[0]) onChange(event.dataTransfer.files[0]) }} className={cn(
@@ -44,7 +45,7 @@ export function UploadSlot({ slot, file, disabled, alternative, onChange }: { sl
         <Button type="button" variant="ghost" size="icon-sm" className="relative z-20" disabled={disabled} aria-label={`${tx("media.upload.remove")} ${file.name}`} onClick={() => { if (input.current) input.current.value = ''; onChange(undefined) }}><X /></Button>
       </div> : <div className="flex flex-col items-center gap-2.5 text-center">
         <span className="flex size-11 items-center justify-center rounded-lg bg-card"><Upload className="size-5 text-link" /></span>
-        <p className="text-[15px] font-medium">{video ? tx("media.upload.drop.a.video.here.or.click.to.choose") : tx("media.upload.drop.a.file.here.or.click.to.choose")}</p>
+        <p className="text-[15px] font-medium">{tx(video ? "media.upload.drop.a.video.here.or.click.to.choose" : audio ? "media.upload.drop.an.audio.here.or.click.to.choose" : "media.upload.drop.a.file.here.or.click.to.choose")}</p>
         <p className="text-xs text-muted-foreground">{[!alternative && text(slot.label, language), !slot.required && !alternative && tx("media.upload.optional")].filter(Boolean).join(' · ')}</p>
       </div>}
     </div>

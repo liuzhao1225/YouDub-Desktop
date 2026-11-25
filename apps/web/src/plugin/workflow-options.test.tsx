@@ -115,3 +115,28 @@ it('honors an explicitly empty model language list', async () => {
   expect(await screen.findByRole('menuitem', { name: '中文 · 不可用' })).toBeDisabled()
   expect(screen.queryByRole('menuitem', { name: '日本語' })).not.toBeInTheDocument()
 })
+
+it('hides burn-subtitles quick option when optional export video input is unconnected', () => {
+  const exportDef: NodeTypeDefinition = {
+    ...type,
+    type: 'youdub.export',
+    inputs: [{ id: 'video', label: '视频', kind: 'artifact', acceptedSchemaIds: ['video/mp4/v1'], required: false }],
+    configSchema: nodeDescriptors.export.configSchema,
+    ui: nodeDescriptors.export.ui,
+  }
+  const baseDoc: WorkflowDocument = {
+    format: 'youdub.workflow', formatVersion: 1, id: 'audio-sub', title: '音频字幕',
+    inputs: [], outputs: [], edges: [],
+    nodes: [{ id: 'export', type: 'youdub.export', typeVersion: exportDef.version, provider: { id: exportDef.providerId }, config: { renderSubtitles: true }, autoContinue: true }],
+    presentation: { positions: {}, viewport: { x: 0, y: 0, zoom: 1 } },
+  }
+  const { rerender } = render(<LanguageProvider><WorkflowOptions document={baseDoc} types={[exportDef]} disabled={false} useSlot={useSlot} onChange={() => {}} /></LanguageProvider>)
+  expect(screen.queryByLabelText('烧录字幕')).not.toBeInTheDocument()
+
+  const withVideoDoc: WorkflowDocument = {
+    ...baseDoc,
+    edges: [{ id: 'e-video', source: { nodeId: '$inputs', portId: 'video' }, target: { nodeId: 'export', portId: 'video' } }],
+  }
+  rerender(<LanguageProvider><WorkflowOptions document={withVideoDoc} types={[exportDef]} disabled={false} useSlot={useSlot} onChange={() => {}} /></LanguageProvider>)
+  expect(screen.getByLabelText('烧录字幕')).toBeInTheDocument()
+})

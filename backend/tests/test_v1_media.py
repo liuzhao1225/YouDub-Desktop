@@ -258,3 +258,56 @@ def test_real_delayed_audio_is_rejected_before_prepare_extracts_it(tmp_path, del
     assert error.value.content["error"]["code"] == "UNSUPPORTED_MEDIA"
     assert not context.work_dir.exists() or not list(context.work_dir.iterdir())
     assert hashlib.sha256(source.read_bytes()).digest() == source_hash
+
+
+@pytest.mark.parametrize("cover_art", [False, True])
+@pytest.mark.parametrize("duration,expected_ms", [("1.001", 1001), ("N/A", 1050)])
+def test_audio_only_inspection_uses_audio_or_container_duration(monkeypatch, cover_art, duration, expected_ms):
+    streams = [{"codec_type": "audio", "codec_name": "aac", "duration": duration}]
+    if cover_art:
+        streams.insert(0, {"codec_type": "video", "disposition": {"attached_pic": 1}, "duration": "2"})
+    monkeypatch.setattr(media, "_probe", lambda *args, **kwargs: {"streams": streams, "format": {"duration": "1.05"}})
+    assert media.inspect_video(Path("source.m4a"), lambda: None, allow_audio_only=True) == {
+        "duration_ms": expected_ms, "audio_codec": "aac",
+    }
+
+
+def test_cover_art_as_first_video_stream_falls_back_to_audio_only_when_allowed(monkeypatch, probe_data):
+    probe_data["streams"].insert(0, {"codec_type": "video", "disposition": {"attached_pic": 1}})
+    monkeypatch.setattr(media, "_probe", lambda *args, **kwargs: probe_data)
+    with pytest.raises(ApiError, match="no usable first video stream"):
+        media.inspect_video(Path("source.mp4"), lambda: None)
+    assert media.inspect_video(Path("source.mp4"), lambda: None, allow_audio_only=True) == {
+        "duration_ms": 1050, "audio_codec": "aac",
+    }
+
+
+@pytest.mark.parametrize("streams,code,message", [
+    ([], "NO_AUDIO_TRACK", "no audio track"),
+    ([{"codec_type": "audio", "start_time": "invalid", "duration": "1"}], "INVALID_MEDIA", "start time"),
+    ([{"codec_type": "audio"}], "INVALID_MEDIA", "duration"),
+])
+def test_audio_only_inspection_rejects_invalid_inputs(monkeypatch, streams, code, message):
+    monkeypatch.setattr(media, "_probe", lambda *args, **kwargs: {"streams": streams})
+    with pytest.raises(ApiError, match=message) as error:
+        media.inspect_video(Path("source.m4a"), lambda: None, allow_audio_only=True)
+    assert error.value.status_code == 422
+    details = error.value.content["error"]
+    assert (details["code"], details["stage"], details["field"]) == (code, "prepare", "file")
+
+
+def test_prepare_real_audio_only_file(tmp_path):
+    if not shutil.which(ffmpeg_binary()) or not shutil.which(ffprobe_binary()):
+        pytest.skip("Local ffmpeg and ffprobe are required for the real-media check")
+    source = tmp_path / "source.flac"
+    subprocess.run([
+        ffmpeg_binary(), "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1", str(source),
+    ], check=True, capture_output=True)
+    info, source_audio, media_json = media.prepare_media(source, tmp_path / "prepare", lambda: None)
+    assert json.loads(media_json.read_text()) == info == {"duration_ms": 1000, "audio_codec": "flac"}
+    assert source_audio.name == "sourceAudio.wav"
+    with wave.open(str(source_audio), "rb") as audio:
+        assert (audio.getnchannels(), audio.getframerate(), audio.getsampwidth()) == (2, 44100, 2)
+        assert audio.getnframes() == 44100
+        assert any(audio.readframes(audio.getnframes()))

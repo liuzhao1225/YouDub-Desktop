@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { translateMessage, type Text } from '@/locales'
 import type { NodeTypeDefinition, WorkflowDocument } from './contracts'
-import { canConnect, connect, endpointKey, parseWorkflow, removeNodes, serializeWorkflowEdits } from './builtin/workflow-utils'
+import { canConnect, connect, endpointKey, parseWorkflow, removeNodes, serializeWorkflowEdits, workflowPortLabel, workflowTemplateTitle } from './builtin/workflow-utils'
 
 const type: NodeTypeDefinition = {
   type: 'audio.process', version: '1', providerId: 'test', operation: 'audio.process',
@@ -12,6 +13,24 @@ const type: NodeTypeDefinition = {
 function graph(): WorkflowDocument {
   return { format: 'youdub.workflow', formatVersion: 1, id: 'test', title: 'Test', inputs: [{ id: 'source', label: 'Audio', kind: 'artifact', schemaId: 'audio/wav/v1', required: true, acceptedMimeTypes: ['audio/*'], maxBytes: 100 }], nodes: ['a', 'b', 'c'].map((id) => ({ id, type: type.type, typeVersion: type.version, provider: { id: 'test' }, config: {}, autoContinue: true })), edges: [{ id: 'ab', source: { nodeId: 'a', portId: 'audio' }, target: { nodeId: 'b', portId: 'audio' } }, { id: 'bc', source: { nodeId: 'b', portId: 'audio' }, target: { nodeId: 'c', portId: 'audio' } }], outputs: [{ id: 'result', label: 'Audio', kind: 'artifact', schemaId: 'audio/wav/v1', required: true, source: { nodeId: 'c', portId: 'audio' } }], presentation: { positions: {}, viewport: { x: 0, y: 0, zoom: 1 } } }
 }
+it.each([
+  ['zh', '音频字幕', '音频配音', '音频', '配音音频', '原文字幕', '译文字幕'],
+  ['en', 'Audio subtitles', 'Audio dubbing', 'Audio', 'Dubbed audio', 'Original subtitles', 'Translated subtitles'],
+  ['ja', '音声字幕', '音声吹き替え', '音声', '吹き替え音声', '原文字幕', '翻訳字幕'],
+])('localizes both audio templates and their ports in %s', (language, subtitles, dubbing, audio, dubbed, original, translated) => {
+  const tx: Text = key => translateMessage(language, key)
+  const subtitleDocument = { ...graph(), id: 'youdub.audio-subtitles', title: '音频字幕' }
+  const dubbingDocument = { ...graph(), id: 'youdub.audio-dubbing', title: '音频配音' }
+  const input = { id: 'audio', label: '音频' }
+  expect(workflowTemplateTitle(subtitleDocument, tx)).toBe(subtitles)
+  expect(workflowPortLabel(subtitleDocument, input, tx)).toBe(audio)
+  expect(workflowPortLabel(subtitleDocument, { id: 'source-subtitles', label: '原文字幕' }, tx)).toBe(original)
+  expect(workflowPortLabel(subtitleDocument, { id: 'translated-subtitles', label: '译文字幕' }, tx)).toBe(translated)
+  expect(workflowTemplateTitle(dubbingDocument, tx)).toBe(dubbing)
+  expect(workflowPortLabel(dubbingDocument, input, tx)).toBe(audio)
+  expect(workflowPortLabel(dubbingDocument, { id: 'audio', label: '配音音频' }, tx)).toBe(dubbed)
+})
+
 describe('workflow connections', () => {
   it('rejects cycles, self-links and incompatible JSON ports before changing the graph', () => {
     const document = graph()

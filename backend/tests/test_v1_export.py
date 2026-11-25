@@ -449,3 +449,62 @@ def test_external_aligned_cues_must_preserve_full_translation_and_video_timeline
         export.run(context, lambda *_: None, output_dir=context.work_dir / "output", prepared_cues=cues)
     assert error.value.content["error"]["code"] == "INVALID_PROVIDER_RESULT"
     assert not (context.work_dir / "output" / "video.mp4").exists()
+
+
+@pytest.fixture
+def audio_only_context(context, monkeypatch):
+    del context.input_files["video"]
+    context.input_files["media_info"].write_text(json.dumps({"duration_ms": 1000, "audio_codec": "aac"}))
+    monkeypatch.setattr(media, "_run_media", lambda *args, **kwargs: pytest.fail("Audio-only export invoked FFmpeg"))
+    return context
+
+
+@pytest.mark.parametrize("mode", ["subtitles", "dubbing", "both"])
+def test_audio_only_export_produces_requested_files(audio_only_context, mode):
+    context = audio_only_context
+    if mode in {"dubbing", "both"}:
+        context = add_dubbing(context, mode)
+    output = context.work_dir / "output"
+    progress = []
+    result = export.run(context, lambda *event: progress.append(event), output_dir=output)
+    assert progress[-1] == (1.0, "Output media is ready")
+    expected = {}
+    if mode in {"dubbing", "both"}:
+        expected["audio"] = output / "audio.wav"
+        assert expected["audio"].read_bytes() == context.input_files["mixed_audio"].read_bytes()
+    if mode in {"subtitles", "both"}:
+        expected.update(source_subtitles=output / "source.srt", translated_subtitles=output / "translated.srt")
+        assert expected["source_subtitles"].read_text() == (
+            "1\n00:00:00,000 --> 00:00:00,200\nHello\n\n"
+            "2\n00:00:00,200 --> 00:00:00,400\nworld\n\n"
+            "3\n00:00:00,650 --> 00:00:01,000\nEnd of the clip\n"
+        )
+        first_end, last_start, last_end = (320, 720, 980) if mode == "both" else (400, 650, 1000)
+        assert expected["translated_subtitles"].read_text() == (
+            f"1\n00:00:00,000 --> {export._srt_time(first_end)}\n你好，世界\n\n"
+            f"2\n{export._srt_time(last_start)} --> {export._srt_time(last_end)}\n结束了\n"
+        )
+    assert result.output_files == expected
+    assert set(output.iterdir()) == set(expected.values())
+
+
+@pytest.mark.parametrize("duration", [0, -1, 1.5, True])
+def test_audio_only_export_requires_positive_integer_duration(audio_only_context, duration):
+    context = audio_only_context
+    context.input_files["media_info"].write_text(json.dumps({"duration_ms": duration}))
+    with pytest.raises(ApiError, match="duration_ms is invalid"):
+        export.run(context, lambda *_: None, output_dir=context.work_dir / "output")
+
+
+def test_audio_only_export_checks_prepared_cues(audio_only_context):
+    context = audio_only_context
+    with pytest.raises(ApiError, match="preserve the complete translation"):
+        export.run(context, lambda *_: None, output_dir=context.work_dir / "output", prepared_cues=[])
+
+
+def test_supplied_missing_video_is_rejected(audio_only_context):
+    context = audio_only_context
+    context.input_files["video"] = context.work_dir / "missing.mp4"
+    with pytest.raises(ApiError) as error:
+        export.run(context, lambda *_: None, output_dir=context.work_dir / "output")
+    assert error.value.content["error"]["code"] == "INPUT_MISSING"

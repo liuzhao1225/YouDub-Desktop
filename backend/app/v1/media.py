@@ -141,7 +141,7 @@ def _positive_number(value: Any) -> float | None:
 
 def _duration_ms(data: dict[str, Any], stream: dict[str, Any]) -> int:
     # MP4 commonly exposes stream duration; Matroska commonly exposes only the
-    # container duration. Prefer the selected video stream when it is available.
+    # container duration. Prefer the selected stream when it is available.
     seconds = _positive_number(stream.get("duration"))
     if seconds is None:
         container = data.get("format")
@@ -164,9 +164,9 @@ def _stream_start_ms(stream: dict[str, Any]) -> int:
 
 
 def inspect_video(
-    path: Path, check_cancel: Callable[[], None],
+    path: Path, check_cancel: Callable[[], None], *, allow_audio_only: bool = False,
 ) -> dict[str, Any]:
-    """Inspect the exact first video/audio streams later used by ffmpeg.
+    """Inspect the first video and audio streams, ignoring cover art in audio-only mode.
 
     The importer owns file-name and byte-count admission. This function also
     works for a temporary upload path without the original file extension.
@@ -175,13 +175,21 @@ def inspect_video(
     streams = data.get("streams")
     if not isinstance(streams, list) or any(not isinstance(stream, dict) for stream in streams):
         raise _invalid("The media stream information is invalid.")
-    video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    first_video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    video = (
+        first_video
+        if first_video is not None and (first_video.get("disposition") or {}).get("attached_pic") != 1
+        else None
+    )
     audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
-    if video is None or video.get("disposition", {}).get("attached_pic") == 1:
+    if video is None and not allow_audio_only:
         raise _invalid("The input has no usable first video stream.")
     if audio is None:
         raise ApiError(422, "NO_AUDIO_TRACK", "The input video has no audio track.",
                        field="file", stage="prepare", action="none")
+    if video is None:
+        _stream_start_ms(audio)
+        return {"duration_ms": _duration_ms(data, audio), "audio_codec": audio.get("codec_name")}
     if _stream_start_ms(video) != _stream_start_ms(audio):
         raise ApiError(415, "UNSUPPORTED_MEDIA", "Different video and audio start times are not supported.",
                        field="file", stage="prepare", action="none")
@@ -201,9 +209,9 @@ def prepare_media(
     check_cancel: Callable[[], None],
     progress: Callable[[float | None, str], None] | None = None,
 ) -> tuple[dict[str, Any], Path, Path]:
-    """Inspect source video and extract canonical 44.1 kHz stereo PCM audio."""
+    """Inspect source media and extract canonical 44.1 kHz stereo PCM audio."""
     check_cancel()
-    info = inspect_video(video, check_cancel)
+    info = inspect_video(video, check_cancel, allow_audio_only=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     source_audio = work_dir / "sourceAudio.wav"
     media_json = work_dir / "media.json"

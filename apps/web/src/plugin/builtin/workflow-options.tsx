@@ -18,7 +18,11 @@ export function WorkflowOptions({ document, types, disabled, onChange, useSlot }
   const { language } = useI18n(), tx = useText()
   const fields = document.nodes.flatMap((node) => {
     const definition = nodeDefinition(node, types)
+    const hasVideoEdge = document.edges.some((edge) => edge.target.nodeId === node.id && edge.target.portId === 'video')
     return (definition?.ui?.quickFields ?? []).flatMap((key) => {
+      if (key === 'renderSubtitles' && definition?.inputs.some((input) => input.id === 'video' && !input.required) && !hasVideoEdge) {
+        return []
+      }
       const field = definition?.configSchema.properties?.[key]
       return field ? [{ node, definition, key, field }] : []
     })

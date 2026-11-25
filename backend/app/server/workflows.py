@@ -25,6 +25,68 @@ def _resolve_model_devices(resources: ResourceManager, *, allow_mps: bool) -> li
     return out or ["cpu"]
 
 
+def _download_node(
+    node_type: str, *, label: dict[str, Any], operation: str, port: str,
+    port_label: dict[str, Any], schema_id: str, available: bool,
+) -> dict[str, Any]:
+    return {
+        "type": node_type,
+        "version": "1.0.0",
+        "label": label,
+        "category": "input",
+        "providerId": "youdub.download",
+        "operation": operation,
+        "provider": {
+            "id": "youdub.download",
+            "label": _lt("yt-dlp", zh="yt-dlp 下载", ja="yt-dlp"),
+            "operations": [{"id": operation}],
+            "execution": "local",
+            "ready": available,
+            "available": available,
+            "models": [],
+        },
+        "inputs": [],
+        "outputs": [
+            {
+                "name": port,
+                "label": port_label,
+                "kind": "artifact",
+                "schemaId": schema_id,
+                "required": True,
+            }
+        ],
+        "runtimeInputSchema": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "title": _lt("Video URL", zh="视频链接", ja="動画 URL"),
+                    "description": _lt(
+                        "Paste a YouTube or Bilibili video link.",
+                        zh="粘贴 YouTube 或 Bilibili 视频链接。",
+                        ja="YouTube または Bilibili の動画リンクを貼り付けます。",
+                    ),
+                }
+            },
+        },
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "proxyPort": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535,
+                    "default": 0,
+                    "x-title": _lt("Download proxy port", zh="下载代理端口", ja="ダウンロードプロキシポート"),
+                    "x-short-title": _lt("Proxy", zh="代理端口", ja="プロキシ"),
+                }
+            },
+        },
+        "defaults": {"proxyPort": 0},
+    }
+
+
 def build_node_types(settings: SettingsStore, resources: ResourceManager) -> list[dict[str, Any]]:
     """Return every built-in NodeTypeDefinition for the DAG canvas and validator."""
     local_devices = _resolve_model_devices(resources, allow_mps=True)
@@ -80,63 +142,18 @@ def build_node_types(settings: SettingsStore, resources: ResourceManager) -> lis
             )
         )
 
+    download_available = bool(resources.yt_dlp_version())
     return [
-        {
-            "type": "youdub.download",
-            "version": "1.0.0",
-            "label": _lt("Video Link Download", zh="视频链接下载", ja="動画リンクダウンロード"),
-            "category": "input",
-            "providerId": "youdub.download",
-            "operation": "video.download/v1",
-            "provider": {
-                "id": "youdub.download",
-                "label": _lt("yt-dlp", zh="yt-dlp 下载", ja="yt-dlp"),
-                "operations": [{"id": "video.download/v1"}],
-                "execution": "local",
-                "ready": bool(resources.yt_dlp_version()),
-                "available": bool(resources.yt_dlp_version()),
-                "models": [],
-            },
-            "inputs": [],
-            "outputs": [
-                {
-                    "name": "video",
-                    "label": _lt("Video", zh="视频", ja="動画"),
-                    "kind": "artifact",
-                    "schemaId": "file/v1",
-                    "required": True,
-                }
-            ],
-            "runtimeInputSchema": {
-                "type": "object",
-                "required": ["url"],
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "title": _lt("Video URL", zh="视频链接", ja="動画 URL"),
-                        "description": _lt(
-                            "Paste a YouTube or Bilibili video link.",
-                            zh="粘贴 YouTube 或 Bilibili 视频链接。",
-                            ja="YouTube または Bilibili の動画リンクを貼り付けます。",
-                        ),
-                    }
-                },
-            },
-            "configSchema": {
-                "type": "object",
-                "properties": {
-                    "proxyPort": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 65535,
-                        "default": 0,
-                        "x-title": _lt("Download proxy port", zh="下载代理端口", ja="ダウンロードプロキシポート"),
-                        "x-short-title": _lt("Proxy", zh="代理端口", ja="プロキシ"),
-                    }
-                },
-            },
-            "defaults": {"proxyPort": 0},
-        },
+        _download_node(
+            "youdub.download", label=_lt("Video Link Download", zh="视频链接下载", ja="動画リンクダウンロード"),
+            operation="video.download/v1", port="video", port_label=_lt("Video", zh="视频", ja="動画"),
+            schema_id="video/mp4/v1", available=download_available,
+        ),
+        _download_node(
+            "youdub.downloadAudio", label=_lt("Audio Link Download", zh="音频链接下载", ja="音声リンクダウンロード"),
+            operation="audio.download/v1", port="audio", port_label=_lt("Audio", zh="音频", ja="音声"),
+            schema_id="audio/file/v1", available=download_available,
+        ),
         {
             "type": "youdub.importSubtitles",
             "version": "1.0.0",
@@ -209,9 +226,9 @@ def build_node_types(settings: SettingsStore, resources: ResourceManager) -> lis
             "inputs": [
                 {
                     "id": "video",
-                    "label": _lt("Video", zh="视频", ja="動画"),
+                    "label": _lt("Media", zh="媒体文件", ja="メディア"),
                     "kind": "artifact",
-                    "acceptedSchemaIds": ["file/v1", "video/mp4/v1"],
+                    "acceptedSchemaIds": ["file/v1", "video/mp4/v1", "audio/file/v1", "audio/wav/v1"],
                     "required": True,
                 }
             ],
@@ -662,7 +679,7 @@ def build_node_types(settings: SettingsStore, resources: ResourceManager) -> lis
                     "label": _lt("Video", zh="视频", ja="動画"),
                     "kind": "artifact",
                     "acceptedSchemaIds": ["file/v1", "video/mp4/v1"],
-                    "required": True,
+                    "required": False,
                 },
                 {
                     "id": "mediaInfo",
@@ -860,7 +877,7 @@ def _translate_node_def(
 
 
 def builtin_workflow_templates() -> list[dict[str, Any]]:
-    """Return the 3 built-in DAG workflow templates (defaulting Whisper to large-v3-turbo)."""
+    """Return the built-in DAG workflow templates (defaulting Whisper to large-v3-turbo)."""
     video_input = {
         "id": "video",
         "label": "视频",
@@ -1008,7 +1025,26 @@ def builtin_workflow_templates() -> list[dict[str, Any]]:
     both_doc["presentation"]["positions"]["export"] = {"x": 2640, "y": 120}
     both_doc["presentation"]["positions"]["$outputs"] = {"x": 3000, "y": 120}
 
-    return [subtitles_doc, dubbing_doc, both_doc]
+    def audio_variant(base: dict[str, Any], template_id: str, title: str) -> dict[str, Any]:
+        doc = copy.deepcopy(base)
+        doc["id"] = template_id
+        doc["title"] = title
+        doc["inputs"] = [{
+            "id": "audio", "label": "音频", "required": True, "kind": "artifact",
+            "schemaId": "audio/file/v1", "acceptedMimeTypes": ["audio/*"],
+        }]
+        doc["edges"] = [edge for edge in doc["edges"] if edge["target"] != {"nodeId": "export", "portId": "video"}]
+        for edge in doc["edges"]:
+            if edge["source"] == {"nodeId": "$inputs", "portId": "video"}:
+                edge["source"]["portId"] = "audio"
+        doc["outputs"] = [output for output in doc["outputs"] if output["id"] != "video"]
+        return doc
+
+    return [
+        subtitles_doc, dubbing_doc, both_doc,
+        audio_variant(subtitles_doc, "youdub.audio-subtitles", "音频字幕"),
+        audio_variant(dubbing_doc, "youdub.audio-dubbing", "音频配音"),
+    ]
 
 
 def validate_workflow_document(
