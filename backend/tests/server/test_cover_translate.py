@@ -253,6 +253,50 @@ def test_download_follows_redirects_retries_timeout_and_does_not_misclassify_cdn
     assert scheme_err.value.code == "INVALID_PROVIDER_RESULT"
 
 
+def test_download_enforces_size_limit_while_streaming(monkeypatch, tmp_path):
+    body_read = False
+    yielded_chunks = 0
+
+    class HeaderLimitStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            nonlocal body_read
+            body_read = True
+            yield b"should-not-be-read"
+
+    def oversized_header(request):
+        if str(request.url) == ENDPOINT:
+            return httpx.Response(200, json={"data": [{"url": IMAGE_URL}]})
+        return httpx.Response(
+            200,
+            headers={"content-length": str(cover.MAX_DOWNLOAD_IMAGE_BYTES + 1)},
+            stream=HeaderLimitStream(),
+        )
+
+    with pytest.raises(AppError) as header_err:
+        translate(tmp_path, oversized_header)
+    assert header_err.value.code == "INVALID_PROVIDER_RESULT"
+    assert body_read is False
+
+    class ChunkedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            nonlocal yielded_chunks
+            for _ in range(10):
+                yielded_chunks += 1
+                yield b"x" * 1024
+
+    monkeypatch.setattr(cover, "MAX_DOWNLOAD_IMAGE_BYTES", 4096)
+
+    def oversized_chunks(request):
+        if str(request.url) == ENDPOINT:
+            return httpx.Response(200, json={"data": [{"url": IMAGE_URL}]})
+        return httpx.Response(200, stream=ChunkedStream())
+
+    with pytest.raises(AppError) as stream_err:
+        translate(tmp_path, oversized_chunks)
+    assert stream_err.value.code == "INVALID_PROVIDER_RESULT"
+    assert yielded_chunks == 5
+
+
 def assert_probe(result):
     assert result["ok"] is True
     assert (result["model"], result["profile"]) == (MODEL, "seedream-5.5")

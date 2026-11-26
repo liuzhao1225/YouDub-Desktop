@@ -15,7 +15,7 @@ import { UploadSlot } from './builtin/media-upload'
 import { taskProgressMessage } from './builtin/task-status'
 import { GraphPorts, NodeSettings } from './builtin/workflow-settings'
 import { TaskNodePage } from './builtin/workflow-task'
-import { changesResources } from './runtime/workflow-resources'
+import { changesResources, resourceKey } from './runtime/workflow-resources'
 import type { NodeTypeDefinition, Request, TaskNodeDetail, TaskView, WorkflowDocument } from './sdk'
 import { bindTestComponent, TestFeatureProvider } from './test-bindings'
 
@@ -191,6 +191,12 @@ it('changes a graph input to the image schema and accepts image uploads', async 
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
     inputs: [{ ...graph.inputs[0], schemaId: 'image/file/v1', acceptedMimeTypes: ['image/*'] }],
   }))
+  const imageGraph = { ...graph, inputs: [{ ...graph.inputs[0], schemaId: 'image/file/v1', acceptedMimeTypes: ['image/*'] }] }
+  const pngGraph = { ...graph, inputs: [{ ...graph.inputs[0], schemaId: 'image/png/v1', acceptedMimeTypes: ['image/*'] }] }
+  const videoGraph = { ...graph, inputs: [{ ...graph.inputs[0], schemaId: 'video/mp4/v1', acceptedMimeTypes: ['video/*'] }] }
+  expect(resourceKey(imageGraph)).toBe(resourceKey(pngGraph))
+  expect(resourceKey(imageGraph)).not.toBe(resourceKey(videoGraph))
+  expect(resourceKey(videoGraph)).toBe(resourceKey(graph))
 })
 
 const BoundNodeSettings = bindTestComponent(NodeSettings, ['useSlot'])

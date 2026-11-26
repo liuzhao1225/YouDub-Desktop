@@ -223,18 +223,23 @@ async def _download_generated_image(
     if urllib.parse.urlsplit(image_url).scheme.lower() not in {"http", "https"}:
         raise AppError(502, "INVALID_PROVIDER_RESULT", "Generated image URL must use http or https.")
     async with _build_client(image_url, proxy_url=proxy_url, timeout=60.0, transport=transport) as dl_client:
-        response = await dl_client.get(image_url, timeout=60.0, follow_redirects=True)
-        _check_download_response(response)
-        raw_length = response.headers.get("content-length")
-        if raw_length is not None:
-            try:
-                if int(raw_length) > MAX_DOWNLOAD_IMAGE_BYTES:
+        async with dl_client.stream("GET", image_url, timeout=60.0, follow_redirects=True) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                _check_download_response(response)
+            raw_length = response.headers.get("content-length")
+            if raw_length is not None:
+                try:
+                    if int(raw_length) > MAX_DOWNLOAD_IMAGE_BYTES:
+                        raise AppError(502, "INVALID_PROVIDER_RESULT", "Downloaded cover image exceeds maximum allowed size.")
+                except ValueError:
+                    pass
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > MAX_DOWNLOAD_IMAGE_BYTES:
                     raise AppError(502, "INVALID_PROVIDER_RESULT", "Downloaded cover image exceeds maximum allowed size.")
-            except ValueError:
-                pass
-        if len(response.content) > MAX_DOWNLOAD_IMAGE_BYTES:
-            raise AppError(502, "INVALID_PROVIDER_RESULT", "Downloaded cover image exceeds maximum allowed size.")
-        return response.content
+            return bytes(chunks)
 
 
 async def translate_cover(
