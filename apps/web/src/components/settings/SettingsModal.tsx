@@ -47,6 +47,21 @@ export interface LLMProviderView {
   unavailableReason: string | null
 }
 
+export interface ImageProviderView {
+  id: string
+  name: string
+  preset: string
+  base_url: string
+  default_model: string
+  models: string[]
+  enabled: boolean
+  requiresApiKey: boolean
+  hasApiKey: boolean
+  apiKeyHint: string
+  available: boolean
+  unavailableReason?: string | null
+}
+
 interface SettingsView {
   ui_language: string
   theme: ThemePreference
@@ -55,6 +70,7 @@ interface SettingsView {
   proxy_url: string
   has_youtube_cookies?: boolean
   llm_providers?: LLMProviderView[]
+  image_providers?: ImageProviderView[]
 }
 
 interface ProviderDraft {
@@ -78,7 +94,125 @@ interface ProbeResponse {
   ok: boolean
   latencyMs?: number
   model?: string
+  profile?: string
   message?: string
+}
+
+interface ImageProviderDraft {
+  id: string
+  name: string
+  preset: string
+  base_url: string
+  default_model: string
+  models: string[]
+  enabled: boolean
+  requiresApiKey: boolean
+  hasApiKey: boolean
+  apiKeyHint: string
+  available: boolean
+  unavailableReason: string
+  apiKey: string
+  clearApiKey: boolean
+}
+
+type SeedreamProfile = 'seededit-3.0' | 'seedream-4.x' | 'seedream-5.5'
+
+const SEEDREAM_MODELS = [
+  'doubao-seedream-5-5-261028',
+  'doubao-seedream-5-0-260128',
+  'doubao-seedream-4-5-251128',
+  'doubao-seedream-4-0-250828',
+  'doubao-seededit-3-0-i2i-250628',
+]
+
+const DEFAULT_IMAGE_PROVIDER: ImageProviderView = {
+  id: 'volcengine',
+  name: '火山方舟 (Seedream)',
+  preset: 'volcengine',
+  base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+  default_model: SEEDREAM_MODELS[0],
+  models: [...SEEDREAM_MODELS],
+  enabled: true,
+  requiresApiKey: true,
+  hasApiKey: false,
+  apiKeyHint: '',
+  available: false,
+  unavailableReason: null,
+}
+
+const SEEDREAM_PROFILE_KEYS = {
+  'seededit-3.0': 'settings.image.profile.seededit3',
+  'seedream-4.x': 'settings.image.profile.seedream4',
+  'seedream-5.5': 'settings.image.profile.seedream55',
+} as const
+
+// Mirrors backend/app/server/cover_translate.py resolve_seedream_profile.
+function detectSeedreamProfile(model: string): SeedreamProfile {
+  const value = model.trim().toLowerCase()
+  if (/seededit-3[-.]0/.test(value)) return 'seededit-3.0'
+  if (
+    /seedream-(4[-.]0|4[-.]5|5[-.]0-lite)/.test(value) ||
+    ((value.includes('seedream-5-0') || value.includes('seedream-5.0')) &&
+      !value.includes('pro') &&
+      !value.includes('flash'))
+  ) {
+    return 'seedream-4.x'
+  }
+  return 'seedream-5.5'
+}
+
+function seedreamProfileLabel(tx: ReturnType<typeof useText>, rawProfile?: string, model = ''): string {
+  if (rawProfile === 'seededit-3.0' || rawProfile === 'seedream-4.x' || rawProfile === 'seedream-5.5') {
+    return tx(SEEDREAM_PROFILE_KEYS[rawProfile])
+  }
+  if (rawProfile) return rawProfile
+  return tx(SEEDREAM_PROFILE_KEYS[detectSeedreamProfile(model)])
+}
+
+const SEEDREAM_PROFILE_PARAMS: Record<SeedreamProfile, string> = {
+  'seededit-3.0': 'image: string · size: adaptive',
+  'seedream-4.x': 'image: [...] · size: 2K · sequential_image_generation: disabled',
+  'seedream-5.5': 'image: [...] · size: 2K',
+}
+
+function mergeImageModels(models: string[], current = '', putCurrentFirst = false): string[] {
+  const trimmed = current.trim()
+  const extras = [...models, trimmed].filter((item) => item && !SEEDREAM_MODELS.includes(item))
+  const ordered = putCurrentFirst && trimmed ? [trimmed, ...SEEDREAM_MODELS, ...extras] : [...SEEDREAM_MODELS, ...extras]
+  return Array.from(new Set(ordered))
+}
+
+function toImageDraft(provider: ImageProviderView): ImageProviderDraft {
+  return {
+    id: provider.id,
+    name: provider.name,
+    preset: provider.preset,
+    base_url: provider.base_url,
+    default_model: provider.default_model,
+    models: [...(provider.models ?? [])],
+    enabled: provider.enabled,
+    requiresApiKey: provider.requiresApiKey,
+    hasApiKey: provider.hasApiKey,
+    apiKeyHint: provider.apiKeyHint ?? '',
+    available: provider.available,
+    unavailableReason: provider.unavailableReason ?? '',
+    apiKey: '',
+    clearApiKey: false,
+  }
+}
+
+function isImageDraftDirty(draft: ImageProviderDraft | null, providers: ImageProviderView[]): boolean {
+  if (!draft) return false
+  const base = providers.find((item) => item.id === draft.id)
+  if (!base) return true
+  return (
+    draft.name !== base.name ||
+    draft.base_url !== base.base_url ||
+    draft.default_model !== base.default_model ||
+    draft.enabled !== base.enabled ||
+    Boolean(draft.apiKey.trim()) ||
+    draft.clearApiKey
+  )
 }
 
 const EXTRA_PRESETS: LLMPreset[] = [
@@ -271,6 +405,265 @@ function isDraftDirty(draft: ProviderDraft | null, providers: LLMProviderView[])
   )
 }
 
+interface ImageProviderEditorProps {
+  draft: ImageProviderDraft
+  dirty: boolean
+  busy: boolean
+  testing: boolean
+  saving: boolean
+  showApiKey: boolean
+  testNote: string
+  savedNote: string
+  idPrefix: string
+  onPatch: (patch: Partial<ImageProviderDraft>) => void
+  onToggleKey: () => void
+  onTest: () => void
+  onSave: () => void
+}
+
+function ImageProviderEditor({
+  draft,
+  dirty,
+  busy,
+  testing,
+  saving,
+  showApiKey,
+  testNote,
+  savedNote,
+  idPrefix,
+  onPatch,
+  onToggleKey,
+  onTest,
+  onSave,
+}: ImageProviderEditorProps) {
+  const tx = useText()
+  const model = draft.default_model.trim()
+  const profile = detectSeedreamProfile(model)
+  const modelOptions = mergeImageModels(draft.models)
+  const statusTag = !draft.enabled ? (
+    <Tag tone="neutral">{tx('settings.llm.disabled')}</Tag>
+  ) : draft.available && !dirty ? (
+    <Tag tone="success">{tx('settings.llm.available')}</Tag>
+  ) : (
+    <Tag tone="warning">{tx('settings.llm.unconfigured')}</Tag>
+  )
+  const keyKept = draft.hasApiKey && !draft.clearApiKey
+
+  return (
+    <Surface
+      as="form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!busy && draft.name.trim()) onSave()
+      }}
+      className="space-y-4 p-4 sm:p-5"
+    >
+      <div className="space-y-2 border-b border-border pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-semibold">{draft.name || draft.id}</span>
+            {statusTag}
+            {model && <Tag tone="neutral">{tx(SEEDREAM_PROFILE_KEYS[profile])}</Tag>}
+            {dirty && <Tag tone="warning">{tx('workflows.unsaved')}</Tag>}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>{tx('settings.llm.enabled')}</span>
+            <Switch
+              aria-label={tx('settings.llm.enabled')}
+              checked={draft.enabled}
+              disabled={busy}
+              onCheckedChange={(checked) => onPatch({ enabled: checked })}
+            />
+          </label>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">{tx('settings.image.intro')}</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-image-name`} className="text-xs font-medium text-muted-foreground">
+            {tx('settings.llm.name')}
+          </Label>
+          <Input
+            id={`${idPrefix}-image-name`}
+            aria-label={tx('settings.llm.name')}
+            value={draft.name}
+            disabled={busy}
+            onChange={(event) => onPatch({ name: event.target.value })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-image-baseurl`} className="text-xs font-medium text-muted-foreground">
+            {tx('settings.llm.baseUrl')}
+          </Label>
+          <Input
+            id={`${idPrefix}-image-baseurl`}
+            aria-label={tx('settings.llm.baseUrl')}
+            value={draft.base_url}
+            disabled={busy}
+            placeholder={DEFAULT_IMAGE_PROVIDER.base_url}
+            onChange={(event) => onPatch({ base_url: event.target.value })}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor={`${idPrefix}-image-apikey`} className="text-xs font-medium text-muted-foreground">
+              {tx('settings.llm.apiKey')}
+            </Label>
+            {keyKept && draft.apiKeyHint && <Tag tone="success">{draft.apiKeyHint}</Tag>}
+          </div>
+          {keyKept && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => onPatch({ apiKey: '', clearApiKey: true })}
+            >
+              {tx('settings.llm.clearApiKey')}
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Input
+            id={`${idPrefix}-image-apikey`}
+            aria-label={tx('settings.llm.apiKey')}
+            className="min-w-0 flex-1"
+            type={showApiKey ? 'text' : 'password'}
+            autoComplete="off"
+            value={draft.apiKey}
+            disabled={busy}
+            placeholder={
+              draft.clearApiKey
+                ? tx('settings.llm.keyCleared')
+                : draft.hasApiKey && draft.apiKeyHint
+                  ? draft.apiKeyHint
+                  : tx('settings.llm.apiKeyPlaceholder')
+            }
+            onChange={(event) => onPatch({ apiKey: event.target.value, clearApiKey: false })}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            disabled={busy}
+            aria-label={showApiKey ? tx('settings.llm.hideKey') : tx('settings.llm.showKey')}
+            onClick={onToggleKey}
+          >
+            {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">{tx('settings.image.apiKeyHint')}</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor={`${idPrefix}-image-model`} className="text-xs font-medium text-muted-foreground">
+          {tx('settings.llm.defaultModel')}
+        </Label>
+        <Input
+          id={`${idPrefix}-image-model`}
+          aria-label={tx('settings.llm.defaultModel')}
+          className="font-mono text-xs"
+          value={draft.default_model}
+          disabled={busy}
+          placeholder="doubao-seedream-5-5-261028 / ep-…"
+          onChange={(event) => onPatch({ default_model: event.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">{tx('settings.image.modelHint')}</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <span className="block text-xs font-medium text-muted-foreground">{tx('settings.image.quickPick')}</span>
+        <ul role="list" className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+          {modelOptions.map((option) => {
+            const active = model === option
+            const optionProfile = detectSeedreamProfile(option)
+            return (
+              <li key={option}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={active}
+                  onClick={() => onPatch({ default_model: option })}
+                  className={cn(
+                    'flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-accent/50 disabled:opacity-60',
+                    active && 'bg-accent',
+                  )}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'flex size-4 shrink-0 items-center justify-center rounded-full border',
+                      active ? 'border-link bg-link text-background' : 'border-border',
+                    )}
+                  >
+                    {active && <Check className="size-3" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-xs text-foreground">{option}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {tx(SEEDREAM_PROFILE_KEYS[optionProfile])}
+                    </span>
+                  </span>
+                  {option === SEEDREAM_MODELS[0] && <Tag tone="success">{tx('settings.image.latest')}</Tag>}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      <div className="space-y-1.5 rounded-lg bg-muted/40 p-3" aria-live="polite">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">{tx('settings.image.compat')}</span>
+          {model ? (
+            <Tag tone="neutral">{tx(SEEDREAM_PROFILE_KEYS[profile])}</Tag>
+          ) : (
+            <span className="text-xs text-muted-foreground">{tx('settings.image.compatEmpty')}</span>
+          )}
+        </div>
+        {model && <p className="break-words font-mono text-[11px] leading-relaxed text-muted-foreground">{SEEDREAM_PROFILE_PARAMS[profile]}</p>}
+        {model.toLowerCase().startsWith('ep-') && (
+          <p className="text-xs leading-relaxed text-muted-foreground">{tx('settings.image.endpointNote')}</p>
+        )}
+      </div>
+
+      {!dirty && draft.enabled && !draft.available && draft.unavailableReason && (
+        <p className="break-words text-xs text-status-warning-fg">{draft.unavailableReason}</p>
+      )}
+
+      {(testNote || savedNote) && (
+        <div role="status" className="space-y-1 text-xs text-status-success-fg">
+          {testNote && <p>{testNote}</p>}
+          {savedNote && <p>{savedNote}</p>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy || !draft.base_url.trim() || !model}
+          onClick={onTest}
+        >
+          {testing ? <Loader2 className="animate-spin" /> : <Sparkles />}
+          {tx('settings.llm.testConnection')}
+        </Button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Button type="submit" size="sm" disabled={busy || !draft.name.trim()}>
+            {saving && <Loader2 className="animate-spin" />}
+            {tx('settings.save')}
+          </Button>
+        </div>
+      </div>
+    </Surface>
+  )
+}
+
 export interface SettingsModalProps {
   open: boolean
   onClose: () => void
@@ -346,6 +739,17 @@ function SettingsModalContent({
   const [deletingProvider, setDeletingProvider] = useState(false)
   const [providerSavedNote, setProviderSavedNote] = useState('')
 
+  // Image provider (Volcengine Ark / Seedream) state. `image_providers` arrives with GET /api/settings.
+  const [activeKind, setActiveKind] = useState<'llm' | 'image'>(focusSection === 'volcengine' ? 'image' : 'llm')
+  const [imageProviders, setImageProviders] = useState<ImageProviderView[]>([DEFAULT_IMAGE_PROVIDER])
+  const [imageDraft, setImageDraft] = useState<ImageProviderDraft | null>(() => toImageDraft(DEFAULT_IMAGE_PROVIDER))
+  const [showImageKey, setShowImageKey] = useState(false)
+  const [testingImage, setTestingImage] = useState(false)
+  const [savingImage, setSavingImage] = useState(false)
+  const [imageTestNote, setImageTestNote] = useState('')
+  const [imageSavedNote, setImageSavedNote] = useState('')
+  const imageTouched = useRef(false)
+
   const presets = useMemo(() => mergePresets(serverPresets), [serverPresets])
 
   useEffect(() => {
@@ -361,10 +765,31 @@ function SettingsModalContent({
         setProxyUrl(settings.proxy_url ?? '')
         setSavedProxyUrl(settings.proxy_url ?? '')
         setHasYoutubeCookies(Boolean(settings.has_youtube_cookies))
+        const imageItems = settings.image_providers?.length ? settings.image_providers : [DEFAULT_IMAGE_PROVIDER]
+        setImageProviders(imageItems)
+        if (!imageTouched.current) {
+          setImageDraft((current) => toImageDraft(imageItems.find((item) => item.id === current?.id) ?? imageItems[0]))
+        } else {
+          setImageDraft((current) => {
+            if (!current) return toImageDraft(imageItems[0])
+            const server = imageItems.find((item) => item.id === current.id)
+            if (!server) return current
+            return {
+              ...current,
+              models: mergeImageModels(server.models),
+              hasApiKey: server.hasApiKey,
+              apiKeyHint: server.apiKeyHint ?? '',
+              available: server.available,
+              unavailableReason: server.unavailableReason ?? '',
+            }
+          })
+        }
       })
       .catch((failure) => {
         if (!controller.signal.aborted) {
-          setGeneralError(failure instanceof Error ? failure.message : String(failure))
+          const message = failure instanceof Error ? failure.message : String(failure)
+          setGeneralError(message)
+          setLlmError((current) => current || message)
         }
       })
       .finally(() => {
@@ -401,7 +826,7 @@ function SettingsModalContent({
   }, [request])
 
   useEffect(() => {
-    if (loadingGeneral || tab !== 'general' || !focusSection) return
+    if (loadingGeneral || tab !== 'general' || (focusSection !== 'proxy' && focusSection !== 'youtube-cookies')) return
     const section =
       focusSection === 'youtube-cookies' ? youtubeCookiesSectionRef.current : proxySectionRef.current
     const input =
@@ -473,7 +898,103 @@ function SettingsModalContent({
     setTestNote('')
     setProviderSavedNote('')
     setShowApiKey(false)
+    setActiveKind('llm')
     setDraft(draftFromPreset(preset, providers))
+  }
+
+  function selectImageProvider(provider: ImageProviderView) {
+    setLlmError('')
+    setImageTestNote('')
+    setImageSavedNote('')
+    setShowImageKey(false)
+    if (activeKind !== 'image' || imageDraft?.id !== provider.id) {
+      imageTouched.current = false
+      setImageDraft(toImageDraft(provider))
+    }
+    // An unsaved "new provider" draft has no row in the image group; drop back to a saved one.
+    if (draft?.isNew) setDraft(providers[0] ? toDraft(providers[0]) : null)
+    setActiveKind('image')
+  }
+
+  function patchImageDraft(patch: Partial<ImageProviderDraft>) {
+    imageTouched.current = true
+    setImageSavedNote('')
+    setImageDraft((current) => (current ? { ...current, ...patch } : current))
+  }
+
+  async function handleTestImage() {
+    if (!imageDraft) return
+    setTestingImage(true)
+    setLlmError('')
+    setImageTestNote('')
+    try {
+      const result = await request<ProbeResponse>(
+        `/api/image/providers/${encodeURIComponent(imageDraft.id)}/test`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: imageDraft.name.trim() || imageDraft.id,
+            preset: imageDraft.preset,
+            base_url: imageDraft.base_url.trim(),
+            default_model: imageDraft.default_model.trim(),
+            ...(imageDraft.apiKey.trim() ? { api_key: imageDraft.apiKey.trim() } : {}),
+            ...(imageDraft.clearApiKey ? { clear_api_key: true } : {}),
+          }),
+        },
+      )
+      if (result.ok) {
+        setImageTestNote(
+          tx('settings.image.testOk', {
+            model: result.model || imageDraft.default_model || '—',
+            profile: seedreamProfileLabel(tx, result.profile, result.model || imageDraft.default_model),
+            latencyMs: result.latencyMs ?? 0,
+          }),
+        )
+      } else {
+        setLlmError(result.message || 'Connection failed')
+      }
+    } catch (failure) {
+      setLlmError(failure instanceof Error ? failure.message : String(failure))
+    } finally {
+      setTestingImage(false)
+    }
+  }
+
+  async function handleSaveImage() {
+    if (!imageDraft) return
+    setSavingImage(true)
+    setLlmError('')
+    setImageSavedNote('')
+    try {
+      const saved = await request<ImageProviderView>(
+        `/api/image/providers/${encodeURIComponent(imageDraft.id)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            name: imageDraft.name.trim() || imageDraft.id,
+            preset: imageDraft.preset,
+            base_url: imageDraft.base_url.trim(),
+            default_model: imageDraft.default_model.trim(),
+            models: mergeImageModels(imageDraft.models, imageDraft.default_model, true),
+            enabled: imageDraft.enabled,
+            ...(imageDraft.apiKey.trim() ? { api_key: imageDraft.apiKey.trim() } : {}),
+            ...(imageDraft.clearApiKey ? { clear_api_key: true } : {}),
+          }),
+        },
+      )
+      imageTouched.current = false
+      setImageProviders((current) =>
+        current.some((item) => item.id === saved.id)
+          ? current.map((item) => (item.id === saved.id ? saved : item))
+          : [...current, saved],
+      )
+      setImageDraft(toImageDraft(saved))
+      setImageSavedNote(tx('settings.saved'))
+    } catch (failure) {
+      setLlmError(failure instanceof Error ? failure.message : String(failure))
+    } finally {
+      setSavingImage(false)
+    }
   }
 
   function buildProbePayload(current: ProviderDraft) {
@@ -619,9 +1140,14 @@ function SettingsModalContent({
   const hasPickDirectory = typeof window !== 'undefined' && typeof window.youdubDesktop?.pickDirectory === 'function'
   const providerBusy = discovering || testing || savingProvider || deletingProvider
   const dirty = isDraftDirty(draft, providers)
-  const saveActionRef = useRef({ tab, canSave: Boolean(draft && !providerBusy && draft.name.trim()), save: handleSaveProvider })
+  const imageBusy = testingImage || savingImage
+  const imageDirty = isImageDraftDirty(imageDraft, imageProviders)
+  const savableDraft = activeKind === 'image'
+    ? Boolean(imageDraft && !imageBusy && imageDraft.name.trim())
+    : Boolean(draft && !providerBusy && draft.name.trim())
+  const saveActionRef = useRef({ tab, canSave: savableDraft, save: activeKind === 'image' ? handleSaveImage : handleSaveProvider })
   useEffect(() => {
-    saveActionRef.current = { tab, canSave: Boolean(draft && !providerBusy && draft.name.trim()), save: handleSaveProvider }
+    saveActionRef.current = { tab, canSave: savableDraft, save: activeKind === 'image' ? handleSaveImage : handleSaveProvider }
   })
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -930,6 +1456,9 @@ function SettingsModalContent({
 
               <div className="grid items-start gap-4 md:grid-cols-[14.5rem_minmax(0,1fr)]">
                 <div className="space-y-3">
+                  <span className="block px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {tx('settings.llm.group')}
+                  </span>
                   {providers.length === 0 && !draft && !loadingLlm && (
                     <Surface className="p-4 text-xs text-muted-foreground">
                       {tx('settings.llm.empty')}
@@ -939,7 +1468,7 @@ function SettingsModalContent({
                   {(providers.length > 0 || draft?.isNew) && (
                     <Surface className="divide-y divide-border overflow-hidden">
                       {providers.map((provider) => {
-                        const selected = draft?.id === provider.id && !draft.isNew
+                        const selected = activeKind === 'llm' && draft?.id === provider.id && !draft.isNew
                         const statusText = !provider.enabled
                           ? tx('settings.llm.disabled')
                           : provider.available
@@ -955,6 +1484,7 @@ function SettingsModalContent({
                               setTestNote('')
                               setProviderSavedNote('')
                               setShowApiKey(false)
+                              setActiveKind('llm')
                               setDraft(toDraft(provider))
                             }}
                             className={cn(
@@ -984,7 +1514,7 @@ function SettingsModalContent({
                           </button>
                         )
                       })}
-                      {draft?.isNew && (
+                      {draft?.isNew && activeKind === 'llm' && (
                         <div className="flex items-start gap-2.5 bg-accent px-3 py-2.5 text-left">
                           <span aria-hidden="true" className="mt-1.5 size-2 shrink-0 rounded-full bg-link" />
                           <span className="min-w-0 flex-1">
@@ -1029,9 +1559,71 @@ function SettingsModalContent({
                       {tx('settings.llm.addProvider')}
                     </Button>
                   </Surface>
+
+                  <span className="block px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {tx('settings.image.group')}
+                  </span>
+                  <Surface className="divide-y divide-border overflow-hidden">
+                    {imageProviders.map((provider) => {
+                      const selected = activeKind === 'image' && imageDraft?.id === provider.id
+                      const statusText = !provider.enabled
+                        ? tx('settings.llm.disabled')
+                        : provider.available
+                          ? tx('settings.llm.available')
+                          : tx('settings.llm.unconfigured')
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          aria-current={selected ? 'true' : undefined}
+                          onClick={() => selectImageProvider(provider)}
+                          className={cn(
+                            'flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent/50',
+                            selected && 'bg-accent',
+                          )}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              'mt-1.5 size-2 shrink-0 rounded-full',
+                              !provider.enabled
+                                ? 'bg-muted-foreground/40'
+                                : provider.available
+                                  ? 'bg-status-success-fg'
+                                  : 'bg-status-warning-fg',
+                            )}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-foreground">{provider.name}</span>
+                            <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                              {provider.default_model} · {statusText}
+                            </span>
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </Surface>
                 </div>
 
-                {draft && (
+                {activeKind === 'image' && imageDraft && (
+                  <ImageProviderEditor
+                    draft={imageDraft}
+                    dirty={imageDirty}
+                    busy={imageBusy}
+                    testing={testingImage}
+                    saving={savingImage}
+                    showApiKey={showImageKey}
+                    testNote={imageTestNote}
+                    savedNote={imageSavedNote}
+                    idPrefix={fieldIdPrefix}
+                    onPatch={patchImageDraft}
+                    onToggleKey={() => setShowImageKey((current) => !current)}
+                    onTest={() => void handleTestImage()}
+                    onSave={() => void handleSaveImage()}
+                  />
+                )}
+
+                {activeKind === 'llm' && draft && (
                   <Surface
                     as="form"
                     onSubmit={(event) => {

@@ -1,5 +1,6 @@
 import { Segmented } from '@/components/ui/segmented'
 import { Surface } from '@/components/ui/surface'
+import { Tag } from '@/components/ui/tag'
 import { Progress } from '@/components/ui/progress'
 import { Disclosure } from '@/components/ui/disclosure'
 import { Textarea } from '@/components/ui/textarea'
@@ -8,7 +9,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import type { Bindings } from '../sdk'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
-import { ArrowLeft, Check, Copy, Download, GitBranch, Loader2, RotateCw, Save, Search } from '@/lib/icons'
+import { ArrowLeft, Check, Copy, Download, GitBranch, ImageIcon, Loader2, RotateCw, Save, Search } from '@/lib/icons'
 import { Link, text, type GraphNode, type JsonObject, type JsonSchema, type NodeDetailProps, type NodeTypeDefinition, type PanelProps, type RouteProps, type TaskNodeDetail, type TaskView, type WorkflowDocumentRecord } from '../sdk'
 import type { StudioDraftStore } from '@/runtime/studio-draft'
 import { useActiveView, useObservableSource, usePendingUnload } from '../view-hooks'
@@ -184,6 +185,8 @@ function NodeDetail({ submissionStore, task, detail, types, error, refresh, requ
   }
   const generic = detail.spec.operation === 'speech.synthesize/v1' && displayed.speechAudio
     ? <SpeechResult taskId={task.id} value={displayed.speechAudio as SpeechAudio} translation={historical ? undefined : detail.inputs.translation as Translation | undefined} historical={historical} raw={displayed} />
+    : detail.spec.operation === 'cover.translate/v1' && artifactRef(displayed.cover)
+    ? <CoverResult taskId={task.id} source={detail.inputs.cover} cover={displayed.cover} meta={displayed.coverMeta} raw={displayed} />
     : <ResultViewer taskId={task.id} value={displayed} labels={Object.fromEntries((definition?.outputs ?? []).map(port => [port.name, text(port.label, language)]))} />
   const hasEditor = !!Custom || (!definition?.ui?.detailId && (
     (definition?.corrections?.outputPorts.includes('transcript') && !!displayed.transcript)
@@ -274,8 +277,10 @@ function ConfigurationValues({ value, schema, nested = false }: { value: JsonObj
     initialPrompt: tx("workflow.task.recognition.prompt"), maxCompletionTokens: tx("workflow.task.maximum.output.tokens"),
     voice: tx("workflow.task.voice"), mode: tx("workflow.task.mode"), id: tx("workflow.task.voice.2"),
     keepBackground: tx("workflow.task.keep.background.audio"), renderSubtitles: tx("workflow.task.render.subtitles"),
+    aspectRatio: tx("workflow.task.aspect.ratio"), coverTitle: tx("workflow.task.cover.title"),
+    customPrompt: tx("workflow.task.custom.prompt"), watermark: tx("workflow.task.watermark"),
   }
-  const names: Record<string, string> = { en: tx("workflow.task.english"), zh: tx("workflow.task.chinese"), ja: tx("workflow.task.japanese"), auto: tx("workflow.task.auto.detect"), source_clone: tx("workflow.task.source.voice.clone"), preset: tx("workflow.task.preset.voice") }
+  const names: Record<string, string> = { en: tx("workflow.task.english"), zh: tx("workflow.task.chinese"), ja: tx("workflow.task.japanese"), auto: tx("workflow.task.auto.detect"), source_clone: tx("workflow.task.source.voice.clone"), preset: tx("workflow.task.preset.voice"), '16:9': tx("workflow.task.cover.ratio.wide"), '4:3_padded': tx("workflow.task.cover.ratio.padded"), original: tx("workflow.task.cover.ratio.original") }
   const content = <dl className="divide-y divide-border">{Object.entries(value).map(([key, item]) => {
     const field = schema?.properties?.[key]
     return <div key={key} className="grid gap-1 py-3 @min-[640px]/page:grid-cols-[minmax(8rem,1fr)_minmax(0,3fr)] @min-[640px]/page:gap-6"><dt className="text-xs text-muted-foreground">{text(field?.['x-title'] ?? field?.title, language) || labels[key] || key}</dt><dd className="min-w-0 break-words whitespace-pre-wrap text-sm">{item && typeof item === 'object' && !Array.isArray(item) ? <ConfigurationValues value={item as JsonObject} schema={field} nested /> : typeof item === 'boolean' ? item ? tx("workflow.task.on") : tx("workflow.task.off") : item === null || item === '' ? '—' : typeof item === 'string' ? names[item] || item : JSON.stringify(item)}</dd></div>
@@ -391,6 +396,61 @@ function Media({ url, video, label }: { url: string; video: boolean; label?: str
   useReleaseMediaOnUnmount(audioRef, url); useReleaseMediaOnUnmount(videoRef, url)
   return video ? <video ref={videoRef} aria-label={label} src={url} controls preload="metadata" className="max-h-96 w-full rounded-xl bg-black" /> : <audio ref={audioRef} aria-label={label} src={url} controls preload="metadata" className="h-10 w-full min-w-0" />
 }
+type ArtifactRef = { id: string; schemaId: string }
+function artifactRef(value: unknown): ArtifactRef | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const { id, schemaId } = value as Partial<ArtifactRef>
+  return typeof id === 'string' && typeof schemaId === 'string' ? { id, schemaId } : undefined
+}
+function ArtifactImage({ url, label, className }: { url: string; label: string; className?: string }) {
+  const tx = useText()
+  const [failed, setFailed] = useState(false)
+  return <div className={cn('flex aspect-video w-full items-center justify-center overflow-hidden rounded-xl bg-black ring-1 ring-border ring-inset', className)}>
+    {failed
+      ? <p role="status" className="flex items-center gap-2 px-4 text-center text-xs text-white/70"><ImageIcon className="size-4 shrink-0" />{tx("workflow.task.image.unavailable")}</p>
+      : <img src={url} alt={label} loading="lazy" onError={() => setFailed(true)} className="size-full object-contain" />}
+  </div>
+}
+function CoverFigure({ taskId, artifact, title, tone }: { taskId: string; artifact: ArtifactRef; title: string; tone?: 'success' }) {
+  const tx = useText()
+  const url = assetUrl(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifact.id)}`)
+  return <figure className="m-0 min-w-0 space-y-2">
+    <figcaption className="flex items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-medium">{title}{tone && <Tag tone={tone}>{tx("workflow.task.cover.new")}</Tag>}</span>
+      <a href={url} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'link', size: 'sm', className: 'shrink-0' })}><Download className="size-4" />{tx("workflow.task.open.image")}</a>
+    </figcaption>
+    <ArtifactImage url={url} label={title} />
+  </figure>
+}
+function CoverResult({ taskId, source, cover, meta, raw }: { taskId: string; source: unknown; cover: unknown; meta: unknown; raw: JsonObject }) {
+  const tx = useText()
+  const output = artifactRef(cover)!
+  const input = artifactRef(source)
+  const info = (meta && typeof meta === 'object' ? meta : {}) as { model?: string; profile?: string; targetLanguage?: string; coverTitle?: string; aspectRatio?: string; width?: number; height?: number; prompt?: string; sourceCover?: unknown }
+  const sourceImage = artifactRef(info.sourceCover) ?? (input?.schemaId.startsWith('image/') ? input : undefined)
+  const languages: Record<string, string> = { en: tx("workflow.task.english"), zh: tx("workflow.task.chinese"), ja: tx("workflow.task.japanese") }
+  const ratios: Record<string, string> = { '16:9': tx("workflow.task.cover.ratio.wide"), '4:3_padded': tx("workflow.task.cover.ratio.padded"), original: tx("workflow.task.cover.ratio.original") }
+  const profiles: Record<string, string> = { 'seededit-3.0': tx('settings.image.profile.seededit3'), 'seedream-4.x': tx('settings.image.profile.seedream4'), 'seedream-5.5': tx('settings.image.profile.seedream55') }
+  const facts = [
+    [tx("workflow.task.model"), info.model],
+    [tx("workflow.task.cover.profile"), info.profile ? profiles[info.profile] || info.profile : undefined],
+    [tx("workflow.task.cover.resolution"), info.width && info.height ? `${info.width} × ${info.height}` : undefined],
+    [tx("workflow.task.aspect.ratio"), info.aspectRatio ? ratios[info.aspectRatio] || info.aspectRatio : undefined],
+    [tx("workflow.task.target.language"), info.targetLanguage ? languages[info.targetLanguage] || info.targetLanguage : undefined],
+    [tx("workflow.task.cover.title"), info.coverTitle],
+  ].filter((fact): fact is [string, string] => Boolean(fact[1]))
+  return <div className="space-y-4">
+    <div className={cn('grid gap-4', sourceImage && '@min-[640px]/page:grid-cols-2')}>
+      {sourceImage && <CoverFigure taskId={taskId} artifact={sourceImage} title={tx("workflow.task.cover.original")} />}
+      <CoverFigure taskId={taskId} artifact={output} title={tx("workflow.task.cover.translated")} tone={sourceImage ? 'success' : undefined} />
+    </div>
+    {input && !sourceImage && <p className="text-xs text-muted-foreground">{tx("workflow.task.cover.source.video")}</p>}
+    {facts.length > 0 && <Surface as="dl" className="grid gap-x-6 gap-y-3 p-4 @min-[640px]/page:grid-cols-3">
+      {facts.map(([name, value]) => <div key={name} className="min-w-0"><dt className="text-xs text-muted-foreground">{name}</dt><dd className="mt-0.5 break-words text-sm">{value}</dd></div>)}
+    </Surface>}
+    {info.prompt && <Disclosure contained={true} title={tx("workflow.task.cover.prompt")}><p className="mt-3 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">{info.prompt}</p></Disclosure>}
+    <RawResult value={raw} />
+  </div>
+}
 function RawResult({ value }: { value: unknown }) {
   const tx = useText()
   return <Disclosure contained={true} title={tx("workflow.task.raw.data")}><pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/40 p-3 text-xs leading-relaxed">{JSON.stringify(value, null, 2)}</pre></Disclosure>
@@ -409,12 +469,13 @@ function ResultViewer({ taskId, value, labels = {} }: { taskId: string; value: u
   for (const artifact of artifacts.values()) counts.set(artifact.label, (counts.get(artifact.label) ?? 0) + 1)
   return <div className="space-y-2">{[...artifacts.values()].map((artifact, index) => {
     const url = assetUrl(`/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifact.id)}`)
-    const audio = artifact.schemaId.startsWith('audio/'), video = artifact.schemaId.startsWith('video/')
+    const audio = artifact.schemaId.startsWith('audio/'), video = artifact.schemaId.startsWith('video/'), image = artifact.schemaId.startsWith('image/')
     seen.set(artifact.label, (seen.get(artifact.label) ?? 0) + 1)
     const label = artifact.label + ((counts.get(artifact.label) ?? 0) > 1 ? ` ${seen.get(artifact.label)}` : '')
     return <Surface as="div" key={artifact.id} className="space-y-3 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">{artifact.label && <span className="text-sm font-medium">{label}</span>}<a href={url} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'link', size: 'sm', className: 'ml-auto shrink-0' })}><Download className="size-4" />{audio ? tx("workflow.task.open.audio") : video ? tx("workflow.task.open.video") : tx("workflow.task.open.file")}{!artifact.label && artifacts.size > 1 ? ` ${index + 1}` : ''}</a></div>
+      <div className="flex flex-wrap items-center justify-between gap-2">{artifact.label && <span className="text-sm font-medium">{label}</span>}<a href={url} target="_blank" rel="noreferrer" className={buttonVariants({ variant: 'link', size: 'sm', className: 'ml-auto shrink-0' })}><Download className="size-4" />{audio ? tx("workflow.task.open.audio") : video ? tx("workflow.task.open.video") : image ? tx("workflow.task.open.image") : tx("workflow.task.open.file")}{!artifact.label && artifacts.size > 1 ? ` ${index + 1}` : ''}</a></div>
       {(audio || video) && <div className="min-w-0 flex-1"><Media url={url} video={video} /></div>}
+      {image && <ArtifactImage url={url} label={label || tx("workflow.task.image")} />}
     </Surface>
   })}<RawResult value={value} /></div>
 }

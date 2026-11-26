@@ -72,13 +72,13 @@ def test_audio_download_port_contracts(tmp_path):
     with client:
         client.post("/api/setup", json={"action": "configure", "path": str(tmp_path / "data")})
         catalog = {n["type"]: n for n in client.get("/api/node-types").json()["items"]}
-        for node_type, port, schema in (
-            ("youdub.download", "video", "video/mp4/v1"),
-            ("youdub.downloadAudio", "audio", "audio/file/v1"),
+        for node_type, expected_outputs in (
+            ("youdub.download", [("video", "video/mp4/v1"), ("cover", "image/jpeg/v1")]),
+            ("youdub.downloadAudio", [("audio", "audio/file/v1")]),
         ):
             node = catalog[node_type]
             assert node["providerId"] == node["provider"]["id"] == "youdub.download"
-            assert [(p["name"], p["schemaId"]) for p in node["outputs"]] == [(port, schema)]
+            assert [(p["name"], p["schemaId"]) for p in node["outputs"]] == expected_outputs
 
         doc = client.get("/api/workflow-documents/youdub.audio-subtitles").json()["document"]
         _use_audio_download(doc)

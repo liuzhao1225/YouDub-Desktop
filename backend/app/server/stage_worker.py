@@ -124,8 +124,13 @@ def execute_spec(spec: dict[str, Any]) -> dict[str, Any]:
             check_cancel=_noop_cancel,
             progress=_progress,
         )
+        artifacts = {port: str(media_path.resolve())}
+        if op == "video.download/v1" and isinstance(meta, dict) and "coverPath" in meta:
+            cover_path = meta.pop("coverPath")
+            if cover_path and Path(cover_path).is_file():
+                artifacts["cover"] = str(Path(cover_path).resolve())
         return {
-            "artifacts": {port: str(media_path.resolve())},
+            "artifacts": artifacts,
             "outputs": {"metadata": meta},
         }
 

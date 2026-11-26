@@ -22,7 +22,10 @@ export function WorkflowResources({ resources, types, disabled, hideReady = fals
   const configurationMissing = missing.some((item) => item.configurationRequired)
   const unconfigured = missing.filter(item => item.configurationRequired)
   const unconfiguredProvider = unconfigured.length === 1 ? types.find(type => type.providerId === unconfigured[0].providerId)?.provider : undefined
-  const configurationName = unconfigured.length === 1 ? unconfiguredProvider?.capability === 'translation' ? tx("workflow.resources.translation.service") : text(unconfiguredProvider?.label, language) || unconfigured[0].providerId : undefined
+  const isCoverProvider = (providerId: string) => types.find(type => type.providerId === providerId)?.provider.capability === 'cover_translation'
+  const coverUnconfigured = unconfigured.some(item => isCoverProvider(item.providerId))
+  const otherUnconfigured = unconfigured.some(item => !isCoverProvider(item.providerId))
+  const configurationName = unconfigured.length === 1 ? unconfiguredProvider?.capability === 'translation' ? tx("workflow.resources.translation.service") : unconfiguredProvider?.capability === 'cover_translation' ? tx("workflow.resources.cover.service") : text(unconfiguredProvider?.label, language) || unconfigured[0].providerId : undefined
   const configurationSummary = configurationName ? tx('workflow.resources.value.not.configured', { value1: configurationName }) : tx('workflow.resources.configure.the.required.service')
   const missingSummary = configurationMissing
     ? missing.some(item => !item.configurationRequired)
@@ -41,14 +44,17 @@ export function WorkflowResources({ resources, types, disabled, hideReady = fals
   const details = state?.status !== 'ready' && (requirements.length > 0 || Boolean(state?.entries?.length)) && <Surface as="div" className="divide-y divide-border px-4">
     {requirements.map(item => {
       const provider = types.find(type => type.providerId === item.providerId)?.provider
-      const label = provider?.legacy && provider.capability === 'translation' ? tx('workflow.resources.translation.service') : text(provider?.label, language) || item.providerId
-      const reason = item.reason === 'Provider connection is not configured.' ? tx("workflow.resources.configure.the.service.url.api.key.and.model") : item.reason
+      const label = provider?.legacy && provider.capability === 'translation' ? tx('workflow.resources.translation.service') : provider?.capability === 'cover_translation' ? tx('workflow.resources.cover.service') : text(provider?.label, language) || item.providerId
+      const reason = item.reason === 'Provider connection is not configured.' ? provider?.capability === 'cover_translation' ? tx("workflow.resources.configure.cover.service.reason") : tx("workflow.resources.configure.the.service.url.api.key.and.model") : item.reason
       return <div key={`${item.providerId}:${item.model}`} className="flex flex-wrap items-start justify-between gap-3 py-4"><div className="min-w-0 flex-auto"><p className="font-medium">{label}{item.model ? ` · ${item.model}` : ''}</p>{reason && <p className="mt-0.5 break-words text-xs text-muted-foreground">{subtitle(reason)}</p>}</div><Tag tone={item.configurationRequired || !item.automatic ? 'warning' : 'neutral'}>{item.configurationRequired ? tx("workflow.resources.not.configured") : item.automatic ? tx("setup.pending") : tx("settings.resources.manual.setup.required")}</Tag></div>
     })}
     {state?.entries?.map(entry => <ResourceRow key={entry.id} entry={entry} busy={disabled || resources.checking || Boolean(otherPreparing) && !entry.actions.some(action => action === 'pause' || action === 'resume')} onAction={(action, entry) => action === 'prepare' ? resources.prepare() : resources.action(action, entry.downloadId)} />)}
   </Surface>
   const actions = resources.error ? <Button variant="outline" size={hideReady ? "sm" : "default"} disabled={disabled || resources.checking} onClick={resources.check}><RotateCcw />{tx("workflow.resources.check.again")}</Button> : state && state.status !== 'ready' && !preparing && !otherPreparing && (manual ? <>
-      {configurationMissing ? <Link href="/settings/models" className="inline-flex text-sm text-link hover:underline">{tx("workflow.resources.configure.service.connection")}</Link> : hideReady ? <Link href="/settings/resources" className="inline-flex text-sm text-link hover:underline">{tx("workflow.resources.environment.models")}</Link> : <p className="text-xs text-muted-foreground">{tx("workflow.resources.complete.the.plugin.setup.above.then.check.again")}</p>}
+      {configurationMissing ? <>
+        {(otherUnconfigured || !coverUnconfigured) && <Link href="/settings/models" className="inline-flex text-sm text-link hover:underline">{tx("workflow.resources.configure.service.connection")}</Link>}
+        {coverUnconfigured && <Link href="/settings/models?section=volcengine" className="inline-flex text-sm text-link hover:underline">{tx("workflow.resources.configure.cover.service")}</Link>}
+      </> : hideReady ? <Link href="/settings/resources" className="inline-flex text-sm text-link hover:underline">{tx("workflow.resources.environment.models")}</Link> : <p className="text-xs text-muted-foreground">{tx("workflow.resources.complete.the.plugin.setup.above.then.check.again")}</p>}
       <Button variant="outline" size={hideReady ? "sm" : "default"} disabled={disabled || resources.checking} onClick={resources.check}><RotateCcw />{tx("workflow.resources.check.again")}</Button>
     </> : <Button variant="outline" size={hideReady ? "sm" : "default"} disabled={disabled || resources.checking} onClick={() => paused ? resources.action('resume') : resources.prepare()}><Download />{paused ? tx('resource.action.resume') : state.status === 'failed' ? tx('resource.action.retry') : tx('resource.prepareRequired')}</Button>)
   return <section aria-label={tx("workflow.resources.workflow.resources")} className="space-y-3 text-sm">

@@ -21,6 +21,17 @@ ProtocolKind = Literal["openai", "anthropic", "gemini"]
 ThemeMode = Literal["system", "light", "dark"]
 UiLanguage = Literal["zh", "en", "ja"]
 
+DEFAULT_VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_SEEDREAM_MODEL = "doubao-seedream-5-5-261028"
+SEEDREAM_MODEL_PRESETS = [
+    "doubao-seedream-5-5-261028",
+    "doubao-seedream-5-0-260128",
+    "doubao-seedream-4-5-251128",
+    "doubao-seedream-4-0-250828",
+    "doubao-seededit-3-0-i2i-250628",
+]
+IMAGE_SECRET_PREFIX = "image:"
+
 
 class LLMProviderConfig(BaseModel):
     id: str
@@ -33,12 +44,27 @@ class LLMProviderConfig(BaseModel):
     enabled: bool = True
 
 
+class ImageProviderConfig(BaseModel):
+    id: str = "volcengine"
+    name: str = "火山方舟 (Seedream)"
+    preset: str = "volcengine"
+    base_url: str = DEFAULT_VOLCENGINE_BASE_URL
+    default_model: str = DEFAULT_SEEDREAM_MODEL
+    models: list[str] = Field(default_factory=lambda: list(SEEDREAM_MODEL_PRESETS))
+    enabled: bool = True
+
+
+def _default_image_providers() -> list[ImageProviderConfig]:
+    return [ImageProviderConfig()]
+
+
 class AppConfig(BaseModel):
     ui_language: UiLanguage = "zh"
     theme: ThemeMode = "system"
     data_dir: str | None = None
     proxy_url: str = ""
     llm_providers: list[LLMProviderConfig] = Field(default_factory=list)
+    image_providers: list[ImageProviderConfig] = Field(default_factory=_default_image_providers)
 
 
 def default_config_dir() -> Path:
@@ -102,13 +128,15 @@ def _atomic_write_json(path: Path, payload: object) -> None:
         raise
 
 
-def provider_requires_api_key(provider: LLMProviderConfig) -> bool:
-    if provider.preset in {"ollama", "lmstudio"}:
+def _is_loopback_host(base_url: str) -> bool:
+    host = (urllib.parse.urlsplit(base_url.strip()).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def provider_requires_api_key(provider: LLMProviderConfig | ImageProviderConfig) -> bool:
+    if isinstance(provider, LLMProviderConfig) and provider.preset in {"ollama", "lmstudio"}:
         return False
-    host = (urllib.parse.urlsplit(provider.base_url.strip()).hostname or "").lower()
-    if host in {"127.0.0.1", "localhost", "::1"}:
-        return False
-    return True
+    return not _is_loopback_host(provider.base_url)
 
 
 def mask_secret(secret: str) -> str:
@@ -219,6 +247,8 @@ class SettingsStore:
                 loaded = AppConfig.model_validate_json(self.config_path.read_text(encoding="utf-8"))
                 if not loaded.llm_providers:
                     loaded.llm_providers = _default_providers()
+                if not loaded.image_providers:
+                    loaded.image_providers = _default_image_providers()
                 if env_data_dir and not loaded.data_dir:
                     loaded.data_dir = str(Path(env_data_dir).expanduser().resolve())
                 return loaded
@@ -227,6 +257,7 @@ class SettingsStore:
         config = AppConfig(
             data_dir=str(Path(env_data_dir).expanduser().resolve()) if env_data_dir else None,
             llm_providers=_default_providers(),
+            image_providers=_default_image_providers(),
         )
         return config
 
@@ -354,9 +385,12 @@ class SettingsStore:
         self.secrets.delete(provider_id)
         self.save()
 
-    def provider_view(self, provider: LLMProviderConfig) -> dict[str, object]:
-        secret = self.secrets.get(provider.id)
-        requires_key = provider_requires_api_key(provider)
+    @staticmethod
+    def _build_provider_view(
+        provider: LLMProviderConfig | ImageProviderConfig,
+        secret: str,
+        requires_key: bool,
+    ) -> dict[str, object]:
         configured = bool(
             provider.enabled
             and provider.base_url.strip()
@@ -372,6 +406,45 @@ class SettingsStore:
             "unavailableReason": None if configured else "Provider connection is not configured.",
         }
 
+    def provider_view(self, provider: LLMProviderConfig) -> dict[str, object]:
+        secret = self.secrets.get(provider.id)
+        return self._build_provider_view(provider, secret, provider_requires_api_key(provider))
+
+    @staticmethod
+    def image_secret_key(provider_id: str) -> str:
+        return f"{IMAGE_SECRET_PREFIX}{provider_id}"
+
+    def get_image_provider(self, provider_id: str) -> ImageProviderConfig | None:
+        return next((item for item in self._config.image_providers if item.id == provider_id), None)
+
+    def get_image_api_key(self, provider_id: str) -> str:
+        return self.secrets.get(self.image_secret_key(provider_id))
+
+    def upsert_image_provider(
+        self,
+        provider: ImageProviderConfig,
+        *,
+        api_key: str | None = None,
+        clear_api_key: bool = False,
+    ) -> ImageProviderConfig:
+        existing = self.get_image_provider(provider.id)
+        if existing is None:
+            self._config.image_providers.append(provider)
+        else:
+            idx = self._config.image_providers.index(existing)
+            self._config.image_providers[idx] = provider
+        secret_key = self.image_secret_key(provider.id)
+        if clear_api_key:
+            self.secrets.delete(secret_key)
+        elif api_key is not None and api_key.strip():
+            self.secrets.set(secret_key, api_key)
+        self.save()
+        return provider
+
+    def image_provider_view(self, provider: ImageProviderConfig) -> dict[str, object]:
+        secret = self.get_image_api_key(provider.id)
+        return self._build_provider_view(provider, secret, not _is_loopback_host(provider.base_url))
+
     def settings_view(self) -> dict[str, object]:
         return {
             "ui_language": self._config.ui_language,
@@ -381,4 +454,5 @@ class SettingsStore:
             "proxy_url": self._config.proxy_url,
             "has_youtube_cookies": self.secrets.has(self.YOUTUBE_COOKIES_SECRET_KEY),
             "llm_providers": [self.provider_view(p) for p in self._config.llm_providers],
+            "image_providers": [self.image_provider_view(p) for p in self._config.image_providers],
         }

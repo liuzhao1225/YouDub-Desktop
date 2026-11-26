@@ -24,7 +24,7 @@ export function changesResources(path: string, method: string, body?: BodyInit |
     return Object.keys(patch).some(key => key !== 'ui_language' && key !== 'theme')
   }
   return method === 'POST' && /^\/api\/(?:resources\/(?:prepare|action|yt-dlp\/update)|workflow-documents\/resources\/prepare)$/.test(path)
-    || ((path.startsWith('/api/llm/') && ['PUT', 'DELETE'].includes(method)))
+    || ((path.startsWith('/api/llm/') || path.startsWith('/api/image/')) && ['PUT', 'DELETE'].includes(method))
 }
 
 /** One API session owns a check for each distinct provider/model requirement set. */

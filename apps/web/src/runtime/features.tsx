@@ -51,8 +51,8 @@ export function createFeatures(
     const method = (init?.method ?? 'GET').toUpperCase()
     if (method !== 'GET') {
       if (changesResources(path, method, init?.body)) resourceChecks.invalidate()
-      if (path.startsWith('/api/llm/') || path.startsWith('/api/settings') || path.startsWith('/api/resources')) {
-        refreshQueries((p) => p.startsWith('/api/node-types') || p.startsWith('/api/resources') || p.startsWith('/api/settings') || p.startsWith('/api/llm/'))
+      if (path.startsWith('/api/llm/') || path.startsWith('/api/image/') || path.startsWith('/api/settings') || path.startsWith('/api/resources')) {
+        refreshQueries((p) => p.startsWith('/api/node-types') || p.startsWith('/api/resources') || p.startsWith('/api/settings') || p.startsWith('/api/llm/') || p.startsWith('/api/image/'))
       }
       if (path === '/api/settings' && method === 'PATCH') {
         refreshQueries((p) => p.startsWith('/api/tasks') || p === 'workflow-documents')
@@ -80,7 +80,7 @@ export function createFeatures(
     })
     events.on('providers.updated', () => {
       resourceChecks.invalidate()
-      refreshQueries((p) => p.startsWith('/api/llm/') || p.startsWith('/api/node-types'))
+      refreshQueries((p) => p.startsWith('/api/llm/') || p.startsWith('/api/image/') || p.startsWith('/api/node-types'))
     })
     events.on('settings.updated', () => {
       resourceChecks.invalidate()

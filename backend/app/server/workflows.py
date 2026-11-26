@@ -7,7 +7,7 @@ from collections import deque
 from typing import Any
 
 from .resources import ResourceManager
-from .settings import LLMProviderConfig, SettingsStore
+from .settings import LLMProviderConfig, SEEDREAM_MODEL_PRESETS, SettingsStore
 
 _LANG_ZH = "中文"
 _LANG_EN = "English"
@@ -29,6 +29,12 @@ def _download_node(
     node_type: str, *, label: dict[str, Any], operation: str, port: str,
     port_label: dict[str, Any], schema_id: str, available: bool,
 ) -> dict[str, Any]:
+    outputs = [{"name": port, "label": port_label, "kind": "artifact", "schemaId": schema_id, "required": True}]
+    if node_type == "youdub.download":
+        outputs.append({
+            "name": "cover", "label": _lt("Cover", zh="视频封面", ja="サムネイル"),
+            "kind": "artifact", "schemaId": "image/jpeg/v1", "required": False,
+        })
     return {
         "type": node_type,
         "version": "1.0.0",
@@ -46,15 +52,7 @@ def _download_node(
             "models": [],
         },
         "inputs": [],
-        "outputs": [
-            {
-                "name": port,
-                "label": port_label,
-                "kind": "artifact",
-                "schemaId": schema_id,
-                "required": True,
-            }
-        ],
+        "outputs": outputs,
         "runtimeInputSchema": {
             "type": "object",
             "required": ["url"],
@@ -141,6 +139,22 @@ def build_node_types(settings: SettingsStore, resources: ResourceManager) -> lis
                 models=[],
             )
         )
+
+    cover_nodes = []
+    for p in settings.config.image_providers:
+        if not p.enabled:
+            continue
+        view = settings.image_provider_view(p)
+        models = list(dict.fromkeys([*([p.default_model] if p.default_model else []), *(p.models or [])]))
+        cover_nodes.append(_translate_cover_node_def(
+            provider_id=p.id, provider_label=p.name, available=bool(view["available"]),
+            unavailable_reason=view.get("unavailableReason"), models=models,
+        ))
+    if not cover_nodes:
+        cover_nodes.append(_translate_cover_node_def(
+            provider_id="volcengine", provider_label="火山方舟 (Seedream)", available=False,
+            unavailable_reason="Provider connection is not configured.", models=list(SEEDREAM_MODEL_PRESETS),
+        ))
 
     download_available = bool(resources.yt_dlp_version())
     return [
@@ -372,6 +386,7 @@ def build_node_types(settings: SettingsStore, resources: ResourceManager) -> lis
             "corrections": {"outputPorts": ["transcript"], "schemaIds": ["youdub.transcript/v1"]},
         },
         *translation_nodes,
+        *cover_nodes,
         {
             "type": "youdub.reference",
             "version": "1.0.0",
@@ -876,6 +891,98 @@ def _translate_node_def(
     }
 
 
+def _translate_cover_node_def(
+    *, provider_id: str, provider_label: str, available: bool, unavailable_reason: str | None, models: list[str],
+) -> dict[str, Any]:
+    return {
+        "type": "youdub.translateCover",
+        "version": "1.0.0",
+        "label": _lt("Translate Cover", zh="翻译封面", ja="サムネイル翻訳"),
+        "category": "cover",
+        "providerId": provider_id,
+        "operation": "cover.translate/v1",
+        "provider": {
+            "id": provider_id, "label": provider_label, "capability": "cover_translation",
+            "operations": [{"id": "cover.translate/v1"}], "execution": "remote",
+            "ready": available, "available": available,
+            **({"unavailableReason": unavailable_reason} if unavailable_reason else {}),
+            "models": models,
+        },
+        "inputs": [
+            {
+                "id": "cover", "label": _lt("Cover / Video", zh="封面或视频", ja="画像 / 動画"),
+                "kind": "artifact", "required": True,
+                "acceptedSchemaIds": ["image/jpeg/v1", "image/png/v1", "image/file/v1", "video/mp4/v1", "file/v1"],
+            },
+            {
+                "id": "translation", "label": _lt("Translation", zh="译文文稿", ja="翻訳文"),
+                "kind": "json", "acceptedSchemaIds": ["youdub.translation/v1"], "required": False,
+            },
+        ],
+        "outputs": [
+            {
+                "name": "cover", "label": _lt("Translated cover", zh="翻译后封面", ja="翻訳済みサムネイル"),
+                "kind": "artifact", "schemaId": "image/jpeg/v1", "required": True,
+            },
+            {
+                "name": "coverMeta", "label": _lt("Cover details", zh="封面信息", ja="サムネイル情報"),
+                "kind": "json", "schemaId": "youdub.coverMeta/v1", "required": False,
+            },
+        ],
+        "runtimeInputSchema": {
+            "type": "object",
+            "properties": {
+                "coverTitle": {
+                    "type": "string",
+                    "title": _lt("Cover title (optional)", zh="封面标题（可选）", ja="サムネイルタイトル（任意）"),
+                    "description": _lt(
+                        "Leave empty to translate text directly from the source cover.",
+                        zh="留空将直接识别并翻译原封面中的文字。", ja="空欄の場合は元画像の文字を直接翻訳します。",
+                    ),
+                },
+            },
+        },
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "targetLanguage": {
+                    "type": "string", "default": "zh",
+                    "x-title": _lt("Target language", zh="译文语言", ja="翻訳先"),
+                    "x-short-title": _lt("Cover lang", zh="封面语言", ja="カバー言語"),
+                    "x-options": [
+                        {"value": "zh", "label": _LANG_ZH}, {"value": "en", "label": _LANG_EN},
+                        {"value": "ja", "label": _LANG_JA},
+                    ],
+                },
+                "aspectRatio": {
+                    "type": "string", "default": "16:9",
+                    "x-title": _lt("Cover aspect ratio", zh="封面比例", ja="アスペクト比"),
+                    "x-short-title": _lt("Ratio", zh="封面比例", ja="比率"),
+                    "x-options": [
+                        {"value": "16:9", "label": _lt("16:9 (1280×720)", zh="16:9（1280×720）", ja="16:9（1280×720）")},
+                        {"value": "4:3_padded", "label": _lt("4:3 Letterbox (1280×960)", zh="4:3 黑边适配（1280×960）", ja="4:3 黒帯付き（1280×960）")},
+                        {"value": "original", "label": _lt("Original size", zh="保持原图尺寸", ja="元のサイズ")},
+                    ],
+                },
+                "coverTitle": {
+                    "type": "string", "default": "",
+                    "x-title": _lt("Custom cover title", zh="指定封面标题", ja="指定タイトル"),
+                },
+                "customPrompt": {
+                    "type": "string", "default": "",
+                    "x-title": _lt("Extra style prompt", zh="补充提示词", ja="追加プロンプト"),
+                },
+                "watermark": {
+                    "type": "boolean", "default": False,
+                    "x-title": _lt("Keep AI watermark", zh="保留 AI 水印", ja="AI 透かしを残す"),
+                },
+            },
+        },
+        "defaults": {"targetLanguage": "zh", "aspectRatio": "16:9", "coverTitle": "", "customPrompt": "", "watermark": False},
+        "ui": {"quickFields": ["targetLanguage", "aspectRatio"]},
+    }
+
+
 def builtin_workflow_templates() -> list[dict[str, Any]]:
     """Return the built-in DAG workflow templates (defaulting Whisper to large-v3-turbo)."""
     video_input = {
@@ -1082,8 +1189,8 @@ def validate_workflow_document(
         node_map[nid] = node
         pid = str((node.get("provider") or {}).get("id") or "")
         ndef = type_map.get((node.get("type", ""), node.get("typeVersion", ""), pid))
-        if ndef is None and node.get("type") == "youdub.translate":
-            ndef = fallback_by_type.get(("youdub.translate", node.get("typeVersion", "")))
+        if ndef is None and node.get("type") in {"youdub.translate", "youdub.translateCover"}:
+            ndef = fallback_by_type.get((node["type"], node.get("typeVersion", "")))
         if ndef is None:
             diagnostics.append(
                 {

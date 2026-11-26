@@ -4,7 +4,7 @@ import { Disclosure } from '@/components/ui/disclosure'
 import { Menu } from '@/components/ui/primitives/Menu'
 import { type Bindings } from '../sdk'
 import { useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, AudioLines, Captions, Check, ChevronDown, Download, FileText, Film, Loader2, RotateCw, Search, Square, Trash2 } from '@/lib/icons'
+import { ArrowLeft, AudioLines, Captions, Check, ChevronDown, Download, FileText, Film, ImageIcon, Loader2, RotateCw, Search, Square, Trash2 } from '@/lib/icons'
 import { Link, text, type PanelProps, type RouteProps, type TaskAction, type TaskNodeDetail, type TaskPage, type TaskView } from '../sdk'
 import { Input } from '@/components/ui/input'
 import { taskNeedsPolling } from '../runtime/query'
@@ -208,12 +208,13 @@ export function TaskDetail({ params, request, navigate, useQuery, useSlot }: Rou
     {!!task.outputs.length && <section className="space-y-4"><h2 className="font-semibold">{tx("library.generated.files")}</h2><Surface as="ol" className="m-0 list-none divide-y divide-border overflow-hidden p-0">{task.outputs.map((output) => {
       const label = output.label || output.name || output.id
       const displayLabel = task.graphSnapshot ? workflowPortLabel(task.graphSnapshot, { id: output.id, label }, tx) : label
-      const audio = output.mimeType?.startsWith('audio/'), textual = output.mimeType?.startsWith('text/') || output.mimeType === 'application/x-subrip'
-      const Icon = output.mimeType?.startsWith('video/') ? Film : audio ? AudioLines : textual ? Captions : FileText
+      const audio = output.mimeType?.startsWith('audio/'), image = output.mimeType?.startsWith('image/'), textual = output.mimeType?.startsWith('text/') || output.mimeType === 'application/x-subrip'
+      const Icon = output.mimeType?.startsWith('video/') ? Film : audio ? AudioLines : image ? ImageIcon : textual ? Captions : FileText
       const outputUrl = assetUrl(output.url)
       return <li key={output.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
         <span aria-hidden="true" className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-muted-foreground"><Icon className="size-4" /></span>
         <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{displayLabel}</p>{output.size !== undefined && <p className="text-xs text-muted-foreground">{formatBytes(output.size)}</p>}</div>
+        {image && <a href={outputUrl} target="_blank" rel="noreferrer" aria-label={`${tx("library.preview.image")} ${displayLabel}`} title={tx("library.preview.image")} className="order-last flex h-16 w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-black ring-1 ring-border ring-inset @2xl/page:order-none @2xl/page:w-28"><img src={outputUrl} alt={displayLabel} loading="lazy" className="size-full object-contain" /></a>}
         {!mediaReleased && audio && <AudioOutput src={outputUrl} className="order-last basis-full @2xl/page:order-none @2xl/page:basis-auto @2xl/page:w-80" />}
         {textual && <TextPreview path={`/api/tasks/${encodeURIComponent(task.id)}/files/${encodeURIComponent(output.id)}`} url={outputUrl} title={displayLabel} subtitle={output.mimeType === 'application/x-subrip' || /\.srt$/i.test(output.name ?? '')} useQuery={useQuery} />}
         <a href={outputUrl} download className={buttonVariants({ variant: 'ghost', size: 'icon' })} title={`${tx("library.download")} ${displayLabel}`} aria-label={`${tx("library.download")} ${displayLabel}`}><Download className="size-4" /></a>

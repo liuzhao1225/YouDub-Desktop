@@ -17,8 +17,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from ..paths import now_iso
 from ..v1.segments import Transcript, Translation
+from .cover_translate import translate_cover
 from .db import Database
 from .errors import AppError, TaskCancelledError
 from .events import EventHub
@@ -41,6 +44,17 @@ def _sha256_path(path: Path) -> str:
     return h.hexdigest()
 
 
+def _normalize_runtime_input(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if v not in (None, "")}
+
+
+def _verify_image_file(path: Path) -> None:
+    with Image.open(path) as img:
+        img.verify()
+
+
 class TaskRunner:
     """Executes DAG workflow tasks, manages human-in-the-loop review, and supports reruns."""
 
@@ -50,11 +64,14 @@ class TaskRunner:
         settings: SettingsStore,
         resources: ResourceManager,
         events: EventHub,
+        *,
+        llm_transport: Any = None,
     ) -> None:
         self.db = db
         self.settings = settings
         self.resources = resources
         self.events = events
+        self.llm_transport = llm_transport
         self._active_runs: dict[str, asyncio.Task[None]] = {}
         self._active_procs: dict[str, asyncio.subprocess.Process] = {}
         self._cancel_flags: set[str] = set()
@@ -575,7 +592,8 @@ class TaskRunner:
                 or old_node.get("provider") != new_node.get("provider")
                 or old_node.get("config") != new_node.get("config")
                 or old_edges_by_target.get(nid, {}) != new_edges_by_target.get(nid, {})
-                or source.get("nodeRuntimeInputs", {}).get(nid) != runtime_inputs.get(nid)
+                or _normalize_runtime_input(source.get("nodeRuntimeInputs", {}).get(nid))
+                != _normalize_runtime_input(runtime_inputs.get(nid))
             )
             if nid in dirty_set or upstream_dirty or node_changed or not has_completed:
                 dirty_set.add(nid)
@@ -819,21 +837,35 @@ class TaskRunner:
         self.db.update_task(task_id, steps=steps, message=message)
         self.events.publish("task.updated", {"taskId": task_id, "status": task["status"]})
 
-    def _maybe_extract_cover(self, task_id: str, video_path: Path) -> None:
+    def _extract_cover_frame(self, video_path: Path, output_path: Path) -> None:
         ff, _ = self.resources.resolve_ffmpeg()
-        if not ff or not video_path.is_file():
-            return
-        cover_file = self.task_dir(task_id) / "cover.jpg"
+        if not ff:
+            raise AppError(422, "INVALID_MEDIA", "FFmpeg is required to extract a cover from video.")
+        for timestamp in ("1", "0"):
+            output_path.unlink(missing_ok=True)
+            try:
+                proc = subprocess.run(
+                    [ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", timestamp, "-i", str(video_path),
+                     "-vframes", "1", str(output_path)],
+                    capture_output=True, timeout=15,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise AppError(422, "INVALID_MEDIA", f"Could not extract a video frame: {exc}") from exc
+            if proc.returncode == 0 and output_path.is_file() and output_path.stat().st_size:
+                return
+        reason = proc.stderr.decode(errors="replace").strip() or "Video contains no decodable frame."
+        raise AppError(422, "INVALID_MEDIA", f"Could not extract a video frame: {reason}")
+
+    def _maybe_extract_cover(self, task_id: str, video_path: Path) -> Path | None:
+        frame_path = video_path.with_suffix(".cover.jpg")
         try:
-            proc = subprocess.run(
-                [ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i", str(video_path), "-vframes", "1", str(cover_file)],
-                capture_output=True,
-                timeout=15,
-            )
-            if proc.returncode == 0 and cover_file.is_file() and cover_file.stat().st_size > 0:
-                self.db.update_task(task_id, cover_path="cover.jpg")
-        except (OSError, subprocess.SubprocessError):
-            pass
+            self._extract_cover_frame(video_path, frame_path)
+        except AppError as exc:
+            self.append_log(task_id, exc.message)
+            return None
+        shutil.copy2(frame_path, self.task_dir(task_id) / "cover.jpg")
+        self.db.update_task(task_id, cover_path="cover.jpg")
+        return frame_path
 
     def _register_node_artifacts(
         self, task_id: str, node_id: str, paths: dict[str, str], *, port_schemas: dict[str, str] | None = None,
@@ -856,6 +888,10 @@ class TaskRunner:
                 schema_id = "audio/wav/v1"
             elif p.suffix.lower() == ".srt":
                 schema_id = "application/x-subrip/v1"
+            elif mime.startswith("image/"):
+                schema_id = {".png": "image/png/v1", ".jpg": "image/jpeg/v1", ".jpeg": "image/jpeg/v1"}.get(
+                    p.suffix.lower(), "image/file/v1"
+                )
             else:
                 schema_id = "file/v1"
             entries[art_id] = {
@@ -886,6 +922,8 @@ class TaskRunner:
             art_id = f"input:{src_port}" if src_nid == "$inputs" else f"{src_nid}:{src_port}"
             entry = artifacts.get(art_id)
             if not entry:
+                if gout.get("required", True):
+                    raise AppError(500, "MISSING_OUTPUT", f"Required workflow output '{gout.get('id')}' was not produced.")
                 continue
             out_id = gout["id"]
             # Map artifact lookup consistently
@@ -1001,6 +1039,7 @@ class TaskRunner:
                         check_cancel=lambda: self._check_not_cancelled(task_id),
                         progress=lambda ratio, msg: self._update_step_progress(task_id, node_id, ratio, msg),
                     )
+                    downloaded_cover = meta.pop("coverPath", None) if not is_audio else None
                 else:
                     dl_spec: dict[str, Any] = {
                         "operation": operation,
@@ -1015,19 +1054,30 @@ class TaskRunner:
                     }
                     dl_result = await self._run_stage_subprocess(task_id, node_id, dl_spec)
                     media_path = Path(dl_result["artifacts"][port]).resolve()
+                    downloaded_cover = dl_result["artifacts"].get("cover")
                     meta = dl_result.get("outputs", {}).get("metadata") or {}
             finally:
                 if cookie_path is not None:
                     cookie_path.unlink(missing_ok=True)
+            artifacts_to_register = {port: str(media_path)}
             if not is_audio:
-                self._maybe_extract_cover(task_id, media_path)
+                if downloaded_cover and Path(downloaded_cover).is_file():
+                    cover_path = Path(downloaded_cover)
+                    task_cover = self.task_dir(task_id) / "cover.jpg"
+                    if cover_path.resolve() != task_cover.resolve():
+                        shutil.copy2(cover_path, task_cover)
+                    self.db.update_task(task_id, cover_path="cover.jpg")
+                else:
+                    cover_path = await asyncio.to_thread(self._maybe_extract_cover, task_id, media_path)
+                if cover_path is not None:
+                    artifacts_to_register["cover"] = str(cover_path)
             title = str(meta.get("title") or "").strip()
             if title:
                 cur_task = self.db.get_task(task_id)
                 cur_name = str(cur_task.get("sourceName") or "").strip()
                 if not cur_name or cur_name.startswith(("http://", "https://")):
                     self.db.update_task(task_id, source_name=title)
-            outputs = self._register_node_artifacts(task_id, node_id, {port: str(media_path)}, port_schemas=port_schemas)
+            outputs = self._register_node_artifacts(task_id, node_id, artifacts_to_register, port_schemas=port_schemas)
             outputs["metadata"] = meta
             return outputs
 
@@ -1062,6 +1112,79 @@ class TaskRunner:
                 check_cancel=lambda: self._check_not_cancelled(task_id),
             )
             return {"translation": translation}
+
+        if ntype == "youdub.translateCover":
+            pid = str(provider.get("id") or "volcengine")
+            img_cfg = self.settings.get_image_provider(pid)
+            if img_cfg is None or not img_cfg.enabled:
+                raise AppError(422, "PROVIDER_NOT_CONFIGURED", f"Image provider {pid!r} is not configured.")
+            api_key = self.settings.get_image_api_key(pid)
+            cover_title = str((runtime_inputs.get(node_id) or {}).get("coverTitle") or cfg.get("coverTitle") or "").strip()
+            if "cover" not in in_files:
+                raise AppError(422, "INVALID_MEDIA", "The connected cover input has no media artifact.")
+            source = next(
+                edge["source"] for edge in graph["edges"]
+                if edge["target"]["nodeId"] == node_id and edge["target"]["portId"] == "cover"
+            )
+            artifacts = self._load_artifact_index(task_id)
+            src_entry = artifacts.get(
+                f"input:{source['portId']}" if source["nodeId"] == "$inputs" else f"{source['nodeId']}:{source['portId']}"
+            )
+            source_schema = str((src_entry or {}).get("schemaId") or "")
+            download_node = next(
+                (n for n in graph["nodes"] if n["id"] == source["nodeId"] and n["type"] == "youdub.download"), None
+            )
+            source_path = Path(in_files["cover"])
+            context = []
+            if download_node:
+                src_nid = download_node["id"]
+                if source["portId"] == "video":
+                    thumbnail = artifacts.get(f"{src_nid}:cover")
+                    if thumbnail and Path(thumbnail["path"]).is_file():
+                        source_path = Path(thumbnail["path"])
+                        source_schema = str(thumbnail.get("schemaId") or "image/jpeg/v1")
+                if not cover_title:
+                    results = self.db.get_node_results(task_id, src_nid)
+                    if results:
+                        title = results[-1]["outputs"].get("metadata", {}).get("title")
+                        if title:
+                            context.append(title)
+            try:
+                await asyncio.to_thread(_verify_image_file, source_path)
+            except Image.DecompressionBombError as exc:
+                raise AppError(422, "INVALID_MEDIA", f"Source image exceeds maximum safe dimensions: {exc}") from exc
+            except (OSError, SyntaxError, ValueError) as exc:
+                if source_schema.startswith("image/"):
+                    raise AppError(422, "INVALID_MEDIA", f"The connected cover image could not be decoded: {exc}") from exc
+                frame = work_dir / "source_frame.jpg"
+                await asyncio.to_thread(self._extract_cover_frame, source_path, frame)
+                source_path = frame
+            if not cover_title and "translation" in in_files:
+                translation = json.loads(Path(in_files["translation"]).read_text(encoding="utf-8"))
+                context.extend(seg["text"] for seg in translation["segments"][:10])
+
+            src_reg = self._register_node_artifacts(task_id, node_id, {"sourceCover": str(source_path)})
+            output_path = work_dir / "translated_cover.jpg"
+            cover_meta = await translate_cover(
+                source_path, output_path, provider=img_cfg, api_key=api_key,
+                model=provider.get("model"), proxy_url=self.settings.config.proxy_url,
+                target_language=str(cfg.get("targetLanguage") or "zh"), cover_title=cover_title,
+                context_excerpt=" ".join(context)[:400], custom_prompt=str(cfg.get("customPrompt") or ""),
+                aspect_ratio=str(cfg.get("aspectRatio") or "16:9"), watermark=bool(cfg.get("watermark", False)),
+                on_progress=lambda ratio, msg: self._update_step_progress(task_id, node_id, ratio, msg),
+                on_log=lambda msg: self.append_log(task_id, msg),
+                check_cancel=lambda: self._check_not_cancelled(task_id),
+                transport=self.llm_transport,
+            )
+            source_art = src_reg.get("sourceCover")
+            if source_art:
+                cover_meta["sourceCover"] = {"id": source_art["id"], "schemaId": source_art["schemaId"]}
+            task_cover = self.task_dir(task_id) / "cover.jpg"
+            if not task_cover.is_file():
+                shutil.copy2(output_path, task_cover)
+                self.db.update_task(task_id, cover_path="cover.jpg")
+            reg = self._register_node_artifacts(task_id, node_id, {"cover": str(output_path)}, port_schemas=port_schemas)
+            return {**reg, "coverMeta": cover_meta}
 
         # All other stages execute cleanly in isolated ML/media child processes
         has_dubbing = any(

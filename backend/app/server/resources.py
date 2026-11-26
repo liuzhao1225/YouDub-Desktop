@@ -1062,10 +1062,11 @@ class ResourceManager:
 
     def _requirement_for_selection(self, sel: dict[str, Any]) -> dict[str, Any]:
         provider_id = str(sel.get("providerId") or "")
+        provider_kind = str(sel.get("providerKind") or "")
         model = sel.get("model")
 
         # LLM translation providers check Settings config + API key
-        llm = self.settings.get_provider(provider_id)
+        llm = None if provider_kind == "image" else self.settings.get_provider(provider_id)
         if llm is not None:
             view = self.settings.provider_view(llm)
             ready = bool(view["available"])
@@ -1074,6 +1075,22 @@ class ResourceManager:
                 **({"model": model} if model else {}),
                 "resourceId": provider_id,
                 "name": llm.name,
+                "ready": ready,
+                "automatic": False,
+                "configurationRequired": not ready,
+                "missingPackages": [],
+                **({} if ready else {"reason": "Provider connection is not configured."}),
+            }
+
+        img_provider = None if provider_kind == "llm" else self.settings.get_image_provider(provider_id)
+        if img_provider is not None:
+            view = self.settings.image_provider_view(img_provider)
+            ready = bool(view["available"])
+            return {
+                "providerId": provider_id,
+                **({"model": model} if model else {}),
+                "resourceId": provider_id,
+                "name": img_provider.name,
                 "ready": ready,
                 "automatic": False,
                 "configurationRequired": not ready,
@@ -1372,19 +1389,56 @@ class ResourceManager:
 
     def selections_for_document(self, document: dict[str, Any]) -> list[dict[str, Any]]:
         selections: list[dict[str, Any]] = []
-        seen: set[tuple[str, str | None]] = set()
-        for node in document.get("nodes", []):
+        seen: set[tuple[str, str | None, str]] = set()
+        nodes = document.get("nodes", [])
+        nodes_by_id = {n.get("id"): n for n in nodes if isinstance(n, dict)}
+        input_schemas = {
+            inp.get("id"): str(inp.get("schemaId") or "")
+            for inp in document.get("inputs", [])
+            if isinstance(inp, dict)
+        }
+        edges = document.get("edges", [])
+        for node in nodes:
             provider = node.get("provider") or {}
             pid = str(provider.get("id") or "")
-            if node.get("type") == "youdub.align" and pid in {"qwen", "qwen_forced_aligner"}:
+            ntype = node.get("type")
+            if ntype == "youdub.align" and pid in {"qwen", "qwen_forced_aligner"}:
                 align_lang = str((node.get("config") or {}).get("targetLanguage") or "zh")
                 if align_lang not in {"zh", "en"}:
                     continue
+            provider_kind = "image" if ntype == "youdub.translateCover" else "llm" if ntype == "youdub.translate" else ""
             model = provider.get("model")
-            key = (pid, str(model) if model else None)
+            key = (pid, str(model) if model else None, provider_kind)
             if pid and key not in seen:
                 seen.add(key)
-                selections.append({"providerId": pid, **({"model": model} if model else {})})
+                selections.append({
+                    "providerId": pid,
+                    **({"model": model} if model else {}),
+                    **({"providerKind": provider_kind} if provider_kind else {}),
+                })
+            if ntype == "youdub.translateCover":
+                nid = node.get("id")
+                cover_edge = next(
+                    (
+                        e for e in edges
+                        if (e.get("target") or {}).get("nodeId") == nid
+                        and (e.get("target") or {}).get("portId") == "cover"
+                    ),
+                    None,
+                )
+                needs_ffmpeg = False
+                if cover_edge:
+                    src = cover_edge.get("source") or {}
+                    src_nid = src.get("nodeId")
+                    src_port = src.get("portId")
+                    if src_nid == "$inputs":
+                        needs_ffmpeg = not input_schemas.get(src_port, "").startswith("image/")
+                    else:
+                        src_node = nodes_by_id.get(src_nid) or {}
+                        needs_ffmpeg = src_node.get("type") != "youdub.download" and src_port != "cover"
+                if needs_ffmpeg and ("youdub.media", None, "") not in seen:
+                    seen.add(("youdub.media", None, ""))
+                    selections.append({"providerId": "youdub.media"})
         return selections
 
     def check_document(self, document: dict[str, Any]) -> dict[str, Any]:

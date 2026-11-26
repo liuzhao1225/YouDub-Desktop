@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import shutil
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,7 +26,7 @@ from .errors import AppError, install_error_handlers
 from .events import EventHub
 from .llm import PRESETS, discover_models, probe_connection
 from .resources import APP_VERSION, ResourceManager
-from .settings import LLMProviderConfig, SettingsStore, ThemeMode, UiLanguage
+from .settings import ImageProviderConfig, LLMProviderConfig, SettingsStore, ThemeMode, UiLanguage
 from .workflows import build_node_types, validate_workflow_document
 
 
@@ -57,6 +58,34 @@ class ProviderProbeBody(BaseModel):
     base_url: str | None = None
     default_model: str | None = None
     api_key: str | None = None
+
+
+class ImageProviderUpsertBody(BaseModel):
+    name: str
+    preset: str = "volcengine"
+    base_url: str = ""
+    default_model: str = ""
+    models: list[str] = []
+    enabled: bool = True
+    api_key: str | None = None
+    clear_api_key: bool = False
+
+
+class ImageProviderProbeBody(BaseModel):
+    name: str | None = None
+    preset: str | None = None
+    base_url: str | None = None
+    default_model: str | None = None
+    api_key: str | None = None
+    clear_api_key: bool = False
+
+
+def _origin(raw: str) -> tuple[str, str, int | None] | None:
+    parsed = urllib.parse.urlsplit(raw.strip())
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80 if parsed.scheme.lower() == "http" else None)
+    return (parsed.scheme.lower(), parsed.hostname.lower(), port)
 
 
 def _read_log_tail(path: Path, lines: int) -> tuple[str, bool]:
@@ -100,7 +129,7 @@ def create_app(
     events = EventHub()
     db = Database()
     resources = ResourceManager(settings, events, transport=download_transport)
-    runner = TaskRunner(db, settings, resources, events)
+    runner = TaskRunner(db, settings, resources, events, llm_transport=llm_transport)
 
     resolved_dist = web_dist
     if resolved_dist is None:
@@ -303,6 +332,55 @@ def create_app(
             cfg, key, proxy_url=settings.config.proxy_url, transport=llm_transport
         )
         return {"items": models}
+
+    @app.get("/api/image/providers")
+    async def list_image_providers() -> dict[str, Any]:
+        return {"items": [settings.image_provider_view(p) for p in settings.config.image_providers]}
+
+    @app.put("/api/image/providers/{provider_id}")
+    async def upsert_image_provider(provider_id: str, body: ImageProviderUpsertBody) -> dict[str, Any]:
+        default_model = body.default_model.strip()
+        cfg = ImageProviderConfig(
+            id=provider_id,
+            name=body.name.strip() or provider_id,
+            preset=body.preset,
+            base_url=body.base_url.strip(),
+            default_model=default_model,
+            models=list(dict.fromkeys([*([default_model] if default_model else []), *(m.strip() for m in body.models if m.strip())])),
+            enabled=body.enabled,
+        )
+        settings.upsert_image_provider(cfg, api_key=body.api_key, clear_api_key=body.clear_api_key)
+        events.publish("providers.updated", {"providerId": provider_id})
+        events.publish("settings.updated", settings.settings_view())
+        return settings.image_provider_view(cfg)
+
+    @app.post("/api/image/providers/{provider_id}/test")
+    async def test_image_provider(provider_id: str, body: ImageProviderProbeBody | None = None) -> dict[str, Any]:
+        from .cover_translate import probe_image_provider
+
+        stored = settings.get_image_provider(provider_id)
+        body = body or ImageProviderProbeBody()
+        cfg = ImageProviderConfig(
+            id=provider_id,
+            name=body.name or (stored.name if stored else provider_id),
+            preset=body.preset or (stored.preset if stored else "volcengine"),
+            base_url=body.base_url if body.base_url is not None else (stored.base_url if stored else ""),
+            default_model=(
+                body.default_model if body.default_model is not None else (stored.default_model if stored else "")
+            ),
+            models=stored.models if stored else [],
+            enabled=True,
+        )
+        draft_key = (body.api_key or "").strip()
+        if body.clear_api_key:
+            key = ""
+        elif draft_key:
+            key = draft_key
+        elif stored is not None and _origin(cfg.base_url) is not None and _origin(cfg.base_url) == _origin(stored.base_url):
+            key = settings.get_image_api_key(provider_id)
+        else:
+            key = ""
+        return await probe_image_provider(cfg, key, proxy_url=settings.config.proxy_url, transport=llm_transport)
 
     # ------------------------------------------------------------------
     # Resources & Workflow Catalog

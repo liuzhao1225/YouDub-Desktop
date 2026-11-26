@@ -42,6 +42,9 @@ const progressMessages: Record<string, MessageKey> = {
   "Preparing output media": "task.progress.export.prepare",
   "Rendering output video": "task.progress.export.render",
   "Output media is ready": "task.progress.export.complete",
+  "Preparing source cover": "task.progress.cover.prepare",
+  "Translating cover with Volcengine Seedream": "task.progress.cover.translate",
+  "Finalizing translated cover": "task.progress.cover.finalize",
   "翻译完成": "task.progress.translation.complete",
   "All source segments have translations": "task.progress.translation.complete",
 }

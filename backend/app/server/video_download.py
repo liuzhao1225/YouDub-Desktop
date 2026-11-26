@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +29,8 @@ _ALLOWED_HOSTS = {
     "b23.tv",
 }
 _YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
+_THUMBNAIL_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+_TEMP_SUFFIXES = {".part", ".ytdl", ".temp"}
 _BILIBILI_VIDEO_RE = re.compile(r"^/video/((?:BV[A-Za-z0-9]+|av\d+))/?$", re.IGNORECASE)
 
 
@@ -263,7 +266,7 @@ def download_audio(
 
 def _find_downloaded_audio(candidate: Path, work_dir: Path) -> Path:
     def complete(path: Path) -> bool:
-        return path.suffix not in {".part", ".ytdl", ".temp"} and path.is_file() and path.stat().st_size > 0
+        return path.suffix not in _TEMP_SUFFIXES and path.is_file() and path.stat().st_size > 0
 
     if complete(candidate):
         return candidate
@@ -271,6 +274,47 @@ def _find_downloaded_audio(candidate: Path, work_dir: Path) -> Path:
         if complete(path):
             return path
     raise AppError(502, "DOWNLOAD_FAILED", "yt-dlp did not produce a downloaded audio file.")
+
+
+def _save_thumbnail(work_dir: Path, downloaded_path: Path, ffmpeg_exec: str) -> Path | None:
+    cover = work_dir / "cover.jpg"
+    temporary = work_dir / "cover.jpg.temp"
+    for thumbnail in sorted(work_dir.glob("source.*")):
+        if (
+            thumbnail.suffix.lower() not in _THUMBNAIL_SUFFIXES
+            or _TEMP_SUFFIXES.intersection(thumbnail.suffixes)
+            or not thumbnail.is_file()
+            or thumbnail.resolve() == downloaded_path.resolve()
+        ):
+            continue
+        try:
+            converted = False
+            try:
+                from PIL import Image, ImageOps
+
+                with Image.open(thumbnail) as image:
+                    ImageOps.exif_transpose(image).convert("RGB").save(temporary, format="JPEG", quality=95)
+                converted = temporary.is_file() and temporary.stat().st_size > 0
+            except Exception:
+                converted = False
+            if not converted:
+                proc = subprocess.run(
+                    [ffmpeg_exec, "-hide_banner", "-loglevel", "error", "-y", "-i", str(thumbnail), "-frames:v", "1", "-f", "mjpeg", str(temporary)],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+                    continue
+            os.replace(temporary, cover)
+        except Exception:
+            # A missing codec or unreadable thumbnail must not discard a completed video.
+            continue
+        finally:
+            temporary.unlink(missing_ok=True)
+            if thumbnail.resolve() != cover.resolve():
+                thumbnail.unlink(missing_ok=True)
+        return cover
+    return None
 
 
 def _download_media(
@@ -333,6 +377,7 @@ def _download_media(
     }
     if not audio_only:
         options["merge_output_format"] = "mp4"
+        options["writethumbnail"] = True
     if ffmpeg_dir:
         options["ffmpeg_location"] = ffmpeg_dir
     if cookiefile:
@@ -356,19 +401,29 @@ def _download_media(
                 mp4_candidate = candidate.with_suffix(".mp4")
                 downloaded_path = mp4_candidate if mp4_candidate.is_file() else candidate
                 if not downloaded_path.is_file() or downloaded_path.stat().st_size == 0:
-                    matches = sorted(work_dir.glob("source.*"))
+                    matches = sorted(
+                        path for path in work_dir.glob("source.*")
+                        if path.suffix.lower() not in _THUMBNAIL_SUFFIXES
+                        and not _TEMP_SUFFIXES.intersection(path.suffixes)
+                        and path.is_file() and path.stat().st_size > 0
+                    )
                     if not matches:
                         raise AppError(502, "DOWNLOAD_FAILED", "yt-dlp did not produce a downloaded video file.")
                     downloaded_path = matches[0]
-            return downloaded_path, {
+            meta = {
                 "title": info.get("title") or downloaded_path.stem,
                 "sourceUrl": target_url,
                 "duration": info.get("duration"),
             }
+            if not audio_only:
+                cover = _save_thumbnail(work_dir, downloaded_path, ffmpeg_exec)
+                if cover is not None:
+                    meta["coverPath"] = str(cover)
+            return downloaded_path, meta
     except BaseException as exc:
         # Never leave half-downloaded files when aborted or rejected cleanly.
         for item in list(work_dir.iterdir()):
-            if item.is_file() and item.name.startswith("source."):
+            if item.is_file() and (item.name.startswith("source.") or item.name in {"cover.jpg", "cover.jpg.temp"}):
                 item.unlink(missing_ok=True)
         if isinstance(exc, yt_dlp.utils.RejectedVideoReached):
             raise AppError(422, "UNSUPPORTED_MEDIA", str(exc) or "Live streams are not supported.") from exc

@@ -166,7 +166,7 @@ async function prepareBundledRuntime() {
   const stagedPythonBin = join(stagedPythonDir, win ? 'python.exe' : 'bin/python3')
   const hasWorkingPython = () => {
     if (!existsSync(stagedPythonBin)) return false
-    const check = spawnSync(stagedPythonBin, ['-c', 'import fastapi, uvicorn, httpx, pydantic, multipart, sentencex'], {
+    const check = spawnSync(stagedPythonBin, ['-c', 'import fastapi, uvicorn, httpx, pydantic, multipart, sentencex, PIL'], {
       stdio: 'ignore',
     })
     return check.status === 0
@@ -214,7 +214,7 @@ async function prepareBundledRuntime() {
       )
     }
     if (installed.status !== 0) throw new Error('Failed to install base Python dependencies into bundled runtime')
-    execFileSync(stagedPythonBin, ['-c', 'import fastapi, uvicorn, httpx, pydantic, multipart, sentencex'], {
+    execFileSync(stagedPythonBin, ['-c', 'import fastapi, uvicorn, httpx, pydantic, multipart, sentencex, PIL'], {
       stdio: 'inherit',
     })
   }

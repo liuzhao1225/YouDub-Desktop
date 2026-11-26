@@ -22,6 +22,7 @@ export interface TaskErrorGuidance {
     | 'downloadNoFormats'
     | 'downloadNetwork'
     | 'videoUnavailable'
+    | 'imageAuth'
     | 'llmAuth'
     | 'llmQuota'
   title: string
@@ -151,6 +152,23 @@ export function resolveTaskErrorGuidance(
           label: tx('task.error.downloadNetwork.action'),
           tab: 'general',
           section: 'proxy',
+        },
+      ],
+    }
+  }
+
+  if (code === 'IMAGE_AUTH_ERROR') {
+    return {
+      category: 'imageAuth',
+      title: tx('task.error.imageAuth.title'),
+      summary: tx('task.error.imageAuth.summary'),
+      steps: [tx('task.error.imageAuth.step1'), tx('task.error.imageAuth.step2')],
+      actions: [
+        {
+          kind: 'settings',
+          label: tx('task.error.imageAuth.action'),
+          tab: 'llm',
+          section: 'volcengine',
         },
       ],
     }

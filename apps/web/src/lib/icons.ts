@@ -27,6 +27,7 @@ export {
   IconFolderOpen as FolderOpen,
   IconGitBranch as GitBranch,
   IconServer as HardDrive,
+  IconPhoto as ImageIcon,
   IconInfoCircle as Info,
   IconLanguage as Languages,
   IconLink as Link2,

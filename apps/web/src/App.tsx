@@ -77,6 +77,11 @@ function parseHref(href: string): RouterLocation {
   }
 }
 
+function readSettingsFocusSection(search: string): SettingsFocusSection | undefined {
+  const section = new URLSearchParams(search).get('section')
+  return section === 'volcengine' || section === 'proxy' || section === 'youtube-cookies' ? section : undefined
+}
+
 function readInitialRouterState(): {
   location: RouterLocation
   initialModal: { open: boolean; tab: SettingsTab; focusSection?: SettingsFocusSection }
@@ -96,10 +101,11 @@ function readInitialRouterState(): {
     }
   }
   if (pathname === '/settings/models') {
+    const focusSection = readSettingsFocusSection(window.location.search)
     window.history.replaceState(null, '', '/')
     return {
       location: { pathname: '/', search: '' },
-      initialModal: { open: true, tab: 'llm' },
+      initialModal: { open: true, tab: 'llm', focusSection },
     }
   }
   return {
@@ -220,7 +226,7 @@ function Workbench({
         return
       }
       if (next.pathname === '/settings/models') {
-        currentModal = { open: true, tab: 'llm' }
+        currentModal = { open: true, tab: 'llm', focusSection: readSettingsFocusSection(next.search) }
         notifyModal()
         return
       }
@@ -245,7 +251,11 @@ function Workbench({
       if (next.pathname === '/settings' || next.pathname === '/settings/models') {
         const tab: SettingsTab = next.pathname === '/settings/models' ? 'llm' : 'general'
         window.history.replaceState(null, '', currentHref)
-        currentModal = { open: true, tab }
+        currentModal = {
+          open: true,
+          tab,
+          focusSection: tab === 'llm' ? readSettingsFocusSection(next.search) : undefined,
+        }
         notifyModal()
         return
       }
